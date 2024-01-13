@@ -14,12 +14,29 @@ for id in range(NUM_OF_FARMERS):
     farmers.append(Farmer(id))
 
 market = Market(farmers)
+state = market.get_state()
+prices = market.get_prices()
+
+for f in farmers:
+    f.calculate_profits(prices, state)
+    f.choose_action(state)
 
 for it in range(10):
     print(it)
+
+# ------- nowa tura -------
+
+    # shuffle farmers
+    for f in farmers:
+        (old, new) = f.action()
+        state = market.update(old, new)
+
+# ------ koniec tury ---------
     state = market.get_state()
-    prices = market.set_prices()
-    
-    farmers.calculate_profits(prices, state)
-    farmers.choose_market(state)
+    prices = market.get_prices()
+
+    for f in farmers:
+        f.calculate_profits(prices, state)
+        f.update(state)
+
     market.summarize_round()

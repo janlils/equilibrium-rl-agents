@@ -15,8 +15,10 @@ class Model:
 
     def s2x(self, s, a):
         return np.array([
-            math.sqrt((s[0] + 1)*(s[1])) - math.sqrt((s[0] * s[1])) if a == 'fish' else 0,
-            math.sqrt((s[0])*(s[1] + 1)) - math.sqrt((s[0] * s[1])) if a == 'coconut' else 0,
+            (s['C'] + 1) / sum(s.values()) if a == 'C' else 0,
+            (s['W'] + 1) / sum(s.values()) if a == 'W' else 0,
+            (s['R'] + 1) / sum(s.values()) if a == 'R' else 0,
+            (s['S'] + 1) / sum(s.values()) if a == 'S' else 0,
             1
         ])
 
@@ -57,75 +59,52 @@ class Farmer:
         self.market = np.random.choice(ALL_POSSIBLE_ACTIONS)
         self.model = Model()
 
-        s = self.get_state()
+        self.costs = {
+            'C' : 8,
+            'W' : 9,
+            'R' : 10,
+            'S' : 11
+        }
+
+        self.previous_state = {}
+        self.next_action = ''
+
+        self.profit = 0
+        self.previous_profit = 0
+
+    def calculate_profits(self, prices, state):
+        self.previous_profit = self.profit
+        self.profit = prices[self.market] - self.costs[self.market]
+
+    def choose_action(self, state):
+        s = state
         Qs = getQs(self.model, s)
         a = max_dict(Qs)[0]
         a = random_action(a)
         self.next_action = a
-        self.previous_state = self.get_state()
-        self.profit = 0
-        self.previous_profit = 0
-        self.money
+        self.previous_state = s
 
-    def produce_random(self):
-        p = np.random.random()
-        if p > 0.5:
-            self.create('fish', self.fish_prod_function)
-        else:
-            self.create('coconut', self.coconut_prod_function)
+    def action(self):
+        old_market = self.market
+        self.market = self.next_action
+        return (old_market, self.market)
 
-    def produce(self):
-        good = self.next_action
-        self.previous_state = self.get_state()
-        p1 = self.get_profit()
-        self.previous_profit= p1
-        if good == 'fish':
-            self.create('fish', self.fish_prod_function)
-        elif good == 'coconut':
-            self.create('coconut', self.coconut_prod_function)
-        else:
-            print("Can't produce: " + good)
-        return self.get_utility() - u1
-
-    def get_utility(self):
-        return self.utility_function(**{'fish': self['fish'], 'coconut' : self['coconut']})
-
-    # def print_utility(self):
-    #     fishes = self['fish']
-    #     coconuts = self['coconut']
-    #     utility = self.consume(self.utility_function, self.consume_everything)
-    #     self.create('fish', fishes)
-    #     self.create('coconut', coconuts)
-    #     fish_u = self.params[0]['fish']
-    #     coconut_u = self.params[0]['coconut']
-    #     fish_prod = self.params[1][0]
-    #     coconut_prod = self.params[1][1]
-    #     return [self.id, utility, fishes, coconuts, self.price, self.num_trades,
-    #             self.fish_produced, self.coconut_produced, fish_u, coconut_u, fish_prod, coconut_prod]
-
-    def get_state(self):
-        return (self['fish'], self['coconut'])
-
-    def get_state_id(self):
-        return (self.id, self.get_state(), self.model.theta, self.price)
-
-    def finalize_round(self, it, time):
+    def update(self, prices, state, it):
         t =  1 + (it // 100) * 0.01
         alpha = ALPHA / t
 
         s = self.previous_state
-        s2 = self.get_state()
-        r = self.get_utility() - self.previous_utility
-        self.adjust_price()
+        s2 = state
+        r = self.profit - self.previous_profit
 
         old_theta = self.model.theta.copy()
         Qs2 = getQs(self.model, s2)
         a = self.next_action
+
         a2 = max_dict(Qs2)[0]
         a2 = random_action(a2, eps = 0.1 / t)
+
         self.model.theta += alpha * (r + GAMMA * self.model.predict(s2, a2) - self.model.predict(s, a))*self.model.grad(s, a)
+
         self.next_action = a2
         self.previous_state = s2
-        self.previous_utility = self.get_utility()
-        # if time == 350:
-        #     print(self.id, self.trade_try, self.num_trades, self.price)
