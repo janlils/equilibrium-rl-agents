@@ -3,7 +3,7 @@ import math
 import random
 from sklearn.linear_model import LinearRegression
 
-ALL_POSSIBLE_ACTIONS = ('C', 'W', 'R', 'S')
+ALL_POSSIBLE_ACTIONS = ('C', 'W', 'R', 'S', 'G')
 GAMMA = 0.9
 ALPHA = 0.1
 
@@ -11,7 +11,7 @@ np.random.seed(1411)
 
 class Model:
     def __init__(self):
-        self.theta = np.random.randn(5) + 10
+        self.theta = np.random.randn(6) + 10
 
     def s2x(self, s, a):
         return np.array([
@@ -19,6 +19,7 @@ class Model:
             (s['W'] + 1) / sum(s.values()) if a == 'W' else 0,
             (s['R'] + 1) / sum(s.values()) if a == 'R' else 0,
             (s['S'] + 1) / sum(s.values()) if a == 'S' else 0,
+            1 if a == 'G' else 0,
             1
         ])
 
@@ -63,7 +64,8 @@ class Farmer:
             'C' : 8,
             'W' : 9,
             'R' : 10,
-            'S' : 11
+            'S' : 11,
+            'G' : 0
         }
 
         self.previous_state = {}
@@ -80,9 +82,10 @@ class Farmer:
         self.profit = prices[self.market] - self.costs[self.market]
 
     def choose_action(self, state, it = 0):
-        t =  1 + (it // 100)
+        t =  1 + (it // 100) * 0.01
 
         s = state
+
         Qs = getQs(self.model, s)
         a = max_dict(Qs)[0]
         a = random_action(a, eps = 0.1 / t)
@@ -93,6 +96,7 @@ class Farmer:
             print("market: ", self.market)
             print("state: ", s)
             print("next action: ", a)
+            print("previous_profit, profit: ", self.previous_profit, self.profit)
 
         self.next_action = a
         self.previous_state = s

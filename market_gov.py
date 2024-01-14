@@ -6,7 +6,8 @@ class Market:
             'C' : 0,
             'W' : 0,
             'R' : 0,
-            'S' : 0
+            'S' : 0,
+            'G' : 0
         }
 
         for f in farmers:
@@ -34,6 +35,7 @@ class Market:
         prices['W'] = self.wheat_price(self.state['W'])
         prices['R'] = self.rice_price(self.state['R'])
         prices['S'] = self.soybeans_price(self.state['S'])
+        prices['G'] = 1
         return prices
 
     def update(self, old, new):
@@ -54,4 +56,5 @@ class Market:
         print("Wheat: ", (prices['W'] - 9) * self.state['W'])
         print("Rice: ", (prices['R'] - 10) * self.state['R'])
         print("Soybeans: ", (prices['S'] - 11) * self.state['S'])
-        print("Sum: ", (prices['C'] - 8) * self.state['C'] + (prices['W'] - 9) * self.state['W'] + (prices['R'] - 10) * self.state['R'] + (prices['S'] - 11) * self.state['S'])
+        print('Government: ', self.state['G'])
+        print("Sum: ", (prices['C'] - 8) * self.state['C'] + (prices['W'] - 9) * self.state['W'] + (prices['R'] - 10) * self.state['R'] + (prices['S'] - 11) * self.state['S'] + self.state['G'])
