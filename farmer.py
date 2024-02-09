@@ -9,6 +9,12 @@ ALPHA = 0.1
 
 np.random.seed(1411)
 
+
+"""
+    Regression model with 4 variables and constant. The (state, action) pair
+    is translated into dataset - each variable predicts the incremented share of
+    a given market.
+"""
 class Model:
     def __init__(self):
         self.theta = np.random.randn(5) + 10
@@ -59,6 +65,7 @@ class Farmer:
         self.market = np.random.choice(ALL_POSSIBLE_ACTIONS)
         self.model = Model()
 
+        # defined costs of each crop
         self.costs = {
             'C' : 8,
             'W' : 9,
@@ -75,10 +82,18 @@ class Farmer:
     def get_market(self):
         return self.market
 
+    def get_id(self):
+        return self.id
+
     def calculate_profits(self, prices, state):
         self.previous_profit = self.profit
         self.profit = prices[self.market] - self.costs[self.market]
+        return self.profit
 
+    """
+        Choose action with highest predicted Q value. If random number is lower
+        than eps then choose random action. Update next action and previous state.
+    """
     def choose_action(self, state, it = 0):
         t =  1 + (it // 100)
 
@@ -86,13 +101,6 @@ class Farmer:
         Qs = getQs(self.model, s)
         a = max_dict(Qs)[0]
         a = random_action(a, eps = 0.1 / t)
-
-        if it > 9995:
-            print("choose_action for agent: ", self.id)
-            print("Qs: ", Qs)
-            print("market: ", self.market)
-            print("state: ", s)
-            print("next action: ", a)
 
         self.next_action = a
         self.previous_state = s
@@ -102,6 +110,9 @@ class Farmer:
         self.market = self.next_action
         return (old_market, self.market)
 
+    """
+        Update regression model
+    """
     def update(self, prices, state, it):
         t =  1 + (it // 100) * 0.01
         alpha = ALPHA / t

@@ -80,6 +80,7 @@ class Farmer:
     def calculate_profits(self, prices, state):
         self.previous_profit = self.profit
         self.profit = prices[self.market] - self.costs[self.market]
+        return self.profit
 
     def choose_action(self, state, it = 0):
         t =  1 + (it // 100) * 0.01
@@ -90,14 +91,6 @@ class Farmer:
         a = max_dict(Qs)[0]
         a = random_action(a, eps = 0.1 / t)
 
-        if it > 9995:
-            print("choose_action for agent: ", self.id)
-            print("Qs: ", Qs)
-            print("market: ", self.market)
-            print("state: ", s)
-            print("next action: ", a)
-            print("previous_profit, profit: ", self.previous_profit, self.profit)
-
         self.next_action = a
         self.previous_state = s
 
@@ -105,6 +98,9 @@ class Farmer:
         old_market = self.market
         self.market = self.next_action
         return (old_market, self.market)
+
+    def get_id(self):
+        return self.id
 
     def update(self, prices, state, it):
         t =  1 + (it // 100) * 0.01
