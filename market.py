@@ -16,6 +16,12 @@ class Market:
         self.state = state
         self.num_farmers = len(farmers)
 
+ # 'W' : 'g1',
+ # 'C' : 'g2',
+ # 'S' : 'g3',
+ # 'R' : 'g4'
+
+
     def corn_price(self, q):
         return 10 + int(self.num_farmers / 5) - q
 
