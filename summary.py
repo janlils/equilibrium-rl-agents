@@ -10,6 +10,8 @@
 #   art_Decision_chg.png     # line: % agents who changed decision by round
 #   art_Profits_chg.png      # scatter+reg: profit vs % of changed decisions
 
+from pathlib import Path
+import os
 import argparse
 import pickle
 import numpy as np
@@ -207,10 +209,43 @@ def plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, filename: str)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Pretty summary replicating original plots (numeric markets 1..K).")
-    ap.add_argument("--market", required=True, help="Path to results_market_*.pickle")
-    ap.add_argument("--profits", required=True, help="Path to results_profits_*.pickle")
+    ap = argparse.ArgumentParser(description="Summary of simulation results (plots & stats).")
+    ap.add_argument("--market", help="Path to results_market_*.pickle")
+    ap.add_argument("--profits", help="Path to results_profits_*.pickle")
+    ap.add_argument("--outdir", help="Directory to save PNG plots")
     args = ap.parse_args()
+
+    # --- If no pickle paths are provided, automatically select the latest run ---
+    if not args.market or not args.profits:
+        base_dir = Path("results")
+        if not base_dir.exists():
+            print("Error: 'results/' directory not found. Run a simulation first.")
+            sys.exit(1)
+
+        # Find all subdirectories that look like run_YYYY-MM-DD_HH-MM-SS
+        run_dirs = sorted([d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("run_")])
+        if not run_dirs:
+            print("Error: No result folders found in 'results/'.")
+            sys.exit(1)
+
+        latest_run = run_dirs[-1]
+        print(f"Using the most recent results folder: {latest_run}")
+
+        # Look for pickle files inside that folder
+        market_files = sorted(latest_run.glob("results_market*.pickle"))
+        profit_files = sorted(latest_run.glob("results_profits*.pickle"))
+
+        if not market_files or not profit_files:
+            print(f"Error: Missing .pickle files in {latest_run}")
+            sys.exit(1)
+
+        # Use the first matching pickle files
+        args.market = str(market_files[0])
+        args.profits = str(profit_files[0])
+
+        # Default output directory: same folder as the results
+        if not args.outdir:
+            args.outdir = str(latest_run / "plots")
 
     # Load
     results_market = load_pickle(args.market)
@@ -221,6 +256,11 @@ def main():
         results_market = pd.DataFrame(results_market)
     if not isinstance(results_profits, pd.DataFrame):
         results_profits = pd.DataFrame(results_profits)
+
+    # --- Prepare output directory ---
+    market_path = Path(args.market)
+    outdir = Path(args.outdir or market_path.parent)
+    outdir.mkdir(parents=True, exist_ok=True)
 
     # Basic info
     K, N = infer_K_and_N(results_market)
@@ -235,12 +275,13 @@ def main():
     agent_avg_profits, agent_avg_changes = compute_agent_level_stats(results_market, results_profits)
 
     # === Plots ===
-    plot_number_iter(agg_iter, markets_used, 'art_Number_Iter.png')          # (gov variant used 'art_gov_Number_Iter.png')
-    plot_profit_iter(agg_iter, markets_used, 'art_Profit_Iter.png')          # (gov: 'art_gov_Profit_Iter.png')
-    plot_decision_changes(agg_iter, 'art_Decision_chg.png')                  # (gov: 'art_gov_Decision_chg.png')
-    plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, 'art_Profits_chg.png')  # (gov: 'art_gov_Profits_chg.png')
+    plot_number_iter(agg_iter, markets_used, outdir / 'art_Number_Iter.png')
+    plot_profit_iter(agg_iter, markets_used, outdir / 'art_Profit_Iter.png')
+    plot_decision_changes(agg_iter, 'art_Decision_chg.png')
+    plot_decision_changes(agg_iter, outdir / 'art_Decision_chg.png')
+    plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, outdir / 'art_Profits_chg.png')
 
-    print(f"Done. Saved: art_Number_Iter.png, art_Profit_Iter.png, art_Decision_chg.png, art_Profits_chg.png")
+    print(f"Done. Saved plots to: {outdir}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ from config import base_spec, add_constant_market
 from market import Market
 from farmer import Farmer
 import pandas as pd
+from pathlib import Path
+from datetime import datetime
 
 # --- Simulation configuration ---
 N = 100              # number of agents
@@ -14,6 +16,13 @@ ITERATIONS = 1000    # iterations per run
 def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
     # Reproducibility
     np.random.seed(seed); random.seed(seed)
+
+    base_dir = Path("results")
+    base_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    suffix = "_gov" if add_gov else ""
+    run_dir = base_dir / f"run_{timestamp}{suffix}"
+    run_dir.mkdir(exist_ok=False)
 
     spec = base_spec(N)
     if add_gov:
@@ -31,7 +40,7 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
     results_market, results_profits = [], []
 
     for ep in range(EPISODES):          # episodes
-        print(f"\n=== Episode {ep + 1}/{EPISODES} ===")
+        print(f"=== Episode {ep + 1}/{EPISODES} ===")
 
         farmers = [Farmer(i, spec.markets, spec.costs) for i in range(N)]
         init = {m: 0 for m in spec.markets}
@@ -90,11 +99,14 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
     df_profits['Iteration'] = pd.to_numeric(df_profits['Iteration'], errors='coerce').fillna(0).astype(int)
 
     # Save DataFrames
-    with open(f"results_market{suffix}.pickle", "wb") as f:
+    with open(run_dir / f"results_market{suffix}.pickle", "wb") as f:
         pickle.dump(df_market, f)
 
-    with open(f"results_profits{suffix}.pickle", "wb") as f:
+    with open(run_dir / f"results_profits{suffix}.pickle", "wb") as f:
         pickle.dump(df_profits, f)
+
+    print(f"Wyniki zapisane do: {run_dir}")
+    return run_dir
 
 
 if __name__ == "__main__":
