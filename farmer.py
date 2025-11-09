@@ -1,137 +1,104 @@
+# farmer.py
 import numpy as np
-import math
-import random
-from sklearn.linear_model import LinearRegression
-
-ALL_POSSIBLE_ACTIONS = ('C', 'W', 'R', 'S')
+from typing import Dict, Tuple
+from config import MarketId
 GAMMA = 0.9
 ALPHA = 0.1
 
-np.random.seed(1411)
-
-
-"""
-    Regression model with 4 variables and constant. The (state, action) pair
-    is translated into dataset - each variable predicts the incremented share of
-    a given market.
-"""
 class Model:
-    def __init__(self):
-        self.theta = np.random.randn(5) + 10
+    def __init__(self, markets: Tuple[MarketId, ...]):
+        # Feature dimension: K "action slots" + 1 bias
+        self.markets = markets
+        self.dim = len(markets) + 1
+        self.theta = np.random.randn(self.dim) + 10.0  # keep optimistic init for same behavior
 
-    def s2x(self, s, a):
-        return np.array([
-            (s['C'] + 1) / sum(s.values()) if a == 'C' else 0,
-            (s['W'] + 1) / sum(s.values()) if a == 'W' else 0,
-            (s['R'] + 1) / sum(s.values()) if a == 'R' else 0,
-            (s['S'] + 1) / sum(s.values()) if a == 'S' else 0,
-            1
-        ])
+    def _index(self, m: MarketId) -> int:
+        return self.markets.index(m)
 
-    def predict(self, s, a):
-        x = self.s2x(s, a)
-        return self.theta.dot(x)
+    def s2x(self, s: Dict[MarketId, int], m: MarketId) -> np.ndarray:
+        """Feature: [one-hot(m) * (share_after_join)] over K markets + bias."""
+        denom = max(1, sum(s.values()))
+        x = np.zeros(self.dim, dtype=float)
+        x[self._index(m)] = (s[m] + 1) / denom
+        x[-1] = 1.0  # bias
+        return x
 
-    def grad(self, s, a):
-        return self.s2x(s, a)
+    def predict(self, s: Dict[MarketId, int], m: MarketId) -> float:
+        x = self.s2x(s, m)
+        return float(self.theta @ x)
 
-def getQs(model, s):
-    Qs = {}
-    for a in ALL_POSSIBLE_ACTIONS:
-        q_sa = model.predict(s, a)
-        Qs[a] = q_sa
-    return Qs
-
-def max_dict(d):
-    max_key = None
-    max_val = float('-inf')
-    for k, v in list(d.items()):
-        if v > max_val:
-            max_val = v
-            max_key = k
-    return max_key, max_val
-
-def random_action(a, eps = 0.1):
-    p = np.random.random()
-
-    if p < (1 - eps):
-        return a
-    else:
-        return np.random.choice(ALL_POSSIBLE_ACTIONS)
+    def grad(self, s: Dict[MarketId, int], m: MarketId) -> np.ndarray:
+        return self.s2x(s, m)
 
 class Farmer:
-    def __init__(self, id):
+    def __init__(self, id: int, markets: Tuple[MarketId, ...], costs: Dict[MarketId, float]):
         self.id = id
-        self.market = np.random.choice(ALL_POSSIBLE_ACTIONS)
-        self.model = Model()
+        self.markets = markets
+        self.costs = dict(costs)
+        self.market: MarketId = int(np.random.choice(markets))
+        self.model = Model(markets)
 
-        # defined costs of each crop
-        self.costs = {
-            'C' : 8,
-            'W' : 9,
-            'R' : 10,
-            'S' : 11
-        }
+        self.previous_state: Dict[MarketId, int] = {}
+        self.next_action: MarketId = self.market
 
-        self.previous_state = {}
-        self.next_action = ''
+        self.profit: float = 0.0
+        self.previous_profit: float = 0.0
 
-        self.profit = 0
-        self.previous_profit = 0
+    # ---------- helpers ----------
+    @staticmethod
+    def getQs(model: Model, s: Dict[MarketId, int], markets: Tuple[MarketId, ...]) -> Dict[MarketId, float]:
+        """Return dict of Q(s,m) for all markets m."""
+        return {m: model.predict(s, m) for m in markets}
 
-    def get_market(self):
-        return self.market
+    @staticmethod
+    def random_argmax(d: Dict[MarketId, float]) -> MarketId:
+        """Random tie-break argmax."""
+        import numpy as np
+        mval = max(d.values())
+        keys = [k for k, v in d.items() if v == mval]
+        return int(np.random.choice(keys))
 
-    def get_id(self):
-        return self.id
+    def random_action(self, eps: float, greedy_action: MarketId | None) -> MarketId:
+        """ε-randomization: with prob (1-ε) use greedy_action, else uniform random over markets."""
+        import numpy as np
+        if greedy_action is None or np.random.rand() >= (1 - eps):
+            return int(np.random.choice(self.markets))
+        return greedy_action
 
-    def calculate_profits(self, prices, state):
-        self.previous_profit = self.profit
-        self.profit = prices[self.market] - self.costs[self.market]
-        return self.profit
-
-    """
-        Choose action with highest predicted Q value. If random number is lower
-        than eps then choose random action. Update next action and previous state.
-    """
-    def choose_action(self, state, it = 0):
-        t =  1 + (it // 100)
-
-        s = state
-        Qs = getQs(self.model, s)
-        a = max_dict(Qs)[0]
-        a = random_action(a, eps = 0.1 / t)
-
+    # ---------- main API  ----------
+    def choose_action(self, state: Dict[MarketId, int], it: int = 0) -> MarketId:
+        """Pick action for the provided state; set next_action & previous_state; return action."""
+        t = 1 + (it // 100)  
+        Qs = Farmer.getQs(self.model, state, self.markets)
+        greedy = Farmer.random_argmax(Qs)
+        a = self.random_action(eps=(0.1 / t), greedy_action=greedy)
         self.next_action = a
-        self.previous_state = s
+        self.previous_state = state #dict(state) 
+        return a
 
-    def action(self):
+    def action(self) -> tuple[MarketId, MarketId]:
+        """Apply planned action; return (old_market, new_market)."""
         old_market = self.market
         self.market = self.next_action
         return (old_market, self.market)
 
-    """
-        Update regression model
-    """
-    def update(self, prices, state, it):
-        t =  1 + (it // 100) * 0.01
+    def calculate_profits(self, prices: Dict[MarketId, float], state: Dict[MarketId, int]) -> float:
+        """Update profit trackers; reward will be derived as profit delta."""
+        self.previous_profit = self.profit
+        self.profit = prices[self.market] - self.costs[self.market]
+        return self.profit
+
+    def update(self, prices: Dict[MarketId, float], state: Dict[MarketId, int], it: int):
+        """update with target form."""
+        t = 1 + (it // 100) * 0.01
         alpha = ALPHA / t
 
-        s = self.previous_state
+        s  = self.previous_state
         s2 = state
-        r = self.profit - self.previous_profit
+        r  = self.profit - self.previous_profit
 
-        old_theta = self.model.theta.copy()
-
-        a = self.market
+        a  = self.market
         a2 = self.next_action
 
-        self.model.theta += alpha * (r + GAMMA * self.model.predict(s2, a2) - self.model.predict(s, a))*self.model.grad(s, a)
-
-    def print_stats(self):
-        print("Farmer no: ", self.id)
-        print("Previous state: ", self.previous_state)
-        print("Market(action): ", self.market)
-        print("Previous_profit and profit: ", self.previous_profit, self.profit)
-        print("Next action: ", self.next_action)
-        print("Theta: ", self.model.theta)
+        td = (r + GAMMA * self.model.predict(s2, a2)) - self.model.predict(s, a)
+        self.model.theta += alpha * td * self.model.grad(s, a)
