@@ -70,4 +70,5 @@ urllib3==2.5.0
 Werkzeug==3.0.6
 xarray==2025.10.1
 xlrd==2.0.2
+xlsxwriter==3.2.9
 zipp==3.23.0

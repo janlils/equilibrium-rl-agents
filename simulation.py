@@ -110,4 +110,4 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
 
 
 if __name__ == "__main__":
-    run_experiment(N=N, T=ITERATIONS, add_gov=False)
+    run_experiment(N=N, T=ITERATIONS, add_gov=True)

@@ -20,6 +20,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter, defaultdict
 from matplotlib.colors import ListedColormap
+from typing import List, Callable
+from optimal_allocation import potential, dp_potential_max
+from config import base_spec, add_constant_market
 
 plt.rcParams.update({
     "figure.dpi": 120,
@@ -117,6 +120,74 @@ def group_by_iteration_means(summary_df: pd.DataFrame, markets_used: list[int]) 
               [f"count_g{m}" for m in markets_used] + ['changes']]
     return agg
 
+def build_potential_spec(N: int, markets_used: list[int]) -> tuple[list[int], List[Callable[[int], float]], List[float]]:
+    """
+    Build (markets_ordered, p_funcs, costs) consistent with the simulation config.
+    markets_ordered: sorted market ids actually used in the data.
+    p_funcs: list of p_i(n) functions (price as a function of local n and fixed N).
+    costs: list of c_i in the same order.
+    """
+    # Start from the base 4-market spec
+    spec = base_spec(N)
+
+    # If there is a market id not in base_spec, assume it is the gov market
+    # added via add_constant_market with price=1.0, cost=0.0
+    max_m = max(markets_used)
+    if max_m not in spec.markets:
+        spec = add_constant_market(spec, price=1.0, cost=0.0)
+
+    markets_ordered = sorted(markets_used)
+    costs = [spec.costs[m] for m in markets_ordered]
+
+    # Wrap config.price_funcs[m](n, s, N) into p(n) that only depends on n (N is fixed)
+    def make_p(m: int):
+        def f(n: int, _m=m) -> float:
+            # state argument is irrelevant here because your price functions
+            # depend only on n and N
+            return spec.price_funcs[_m](n, {}, N)
+        return f
+
+    p_funcs = [make_p(m) for m in markets_ordered]
+    return markets_ordered, p_funcs, costs
+
+
+def compute_efficiency_series(results_market: pd.DataFrame,
+                              markets_used: list[int]) -> pd.Series:
+    """
+    For each row (Round, Iteration) compute potential ratio Phi / Phi_max
+    based on the allocation of agents across markets.
+    Returns a Series indexed like results_market, named 'efficiency'.
+    """
+    agent_cols = [c for c in results_market.columns if isinstance(c, int)]
+    N = len(agent_cols)
+
+    markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used)
+    _, phi_max = dp_potential_max(N, p_funcs, costs)
+    if phi_max == 0:
+        phi_max = 1.0
+
+    ratios = []
+    for _, row in results_market[agent_cols].iterrows():
+        alloc = [(row == m).sum() for m in markets_ordered]
+        phi = potential(p_funcs, costs, alloc)
+        ratio = float(phi) / phi_max
+        ratios.append(ratio)
+
+    eff = pd.Series(ratios, index=results_market.index, name="efficiency")
+    return eff
+
+
+def compute_efficiency_by_iteration(results_market: pd.DataFrame,
+                                    markets_used: list[int]) -> pd.Series:
+    """
+    Average potential efficiency by iteration (across episodes).
+    """
+    eff_series = compute_efficiency_series(results_market, markets_used)
+    eff_df = results_market[['Round', 'Iteration']].copy()
+    eff_df['efficiency'] = eff_series
+    eff_by_iter = eff_df.groupby('Iteration')['efficiency'].mean()
+    return eff_by_iter
+
 
 def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.DataFrame):
     """
@@ -207,6 +278,72 @@ def plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, filename: str)
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
+def plot_efficiency_vs_changes(summary_df: pd.DataFrame,
+                               eff_series: pd.Series,
+                               filename: str):
+    """
+    Scatter: each point is one (Round, Iteration).
+    X axis: potential ratio Phi / Phi_max.
+    Y axis: % of agents who changed market between this and next iteration.
+    """
+    df = summary_df[['changes']].copy()
+    df['efficiency'] = eff_series.reindex(df.index)
+
+    # Drop rows with NaN (e.g. last iteration in each episode where changes is NaN)
+    df = df.dropna(subset=['changes', 'efficiency'])
+
+    x = df['efficiency']
+    y = df['changes']
+
+    ax = sns.regplot(
+        x=x,
+        y=y,
+        scatter_kws={'s': 1, 'color': '#24325F'},
+        line_kws=dict(color='#FB6467')
+    )
+    ax.set_title('Efficiency vs. stability \n (each dot is one round in one episode)')
+    ax.set_xlabel('Potential ratio (Phi / Phi_max)')
+    ax.set_ylabel('% of agents who changed market')
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
+def plot_efficiency_hist_last_iter(eff_series: pd.Series,
+                                   results_market: pd.DataFrame,
+                                   filename: str):
+    """
+    Histogram of efficiency (Phi / Phi_max) in the final iteration of each episode.
+    One observation per episode.
+    """
+    df = results_market[['Round', 'Iteration']].copy()
+    df['efficiency'] = eff_series.reindex(df.index)
+
+    # Last iteration index (assumed common across episodes)
+    last_iter = df['Iteration'].max()
+
+    eff_last = df.loc[df['Iteration'] == last_iter, 'efficiency'].dropna()
+
+    plt.hist(eff_last, bins=20, edgecolor='black')
+    plt.title('Distribution of efficiency in the final round')
+    plt.xlabel('Potential ratio (Phi / Phi_max)')
+    plt.ylabel('Number of episodes')
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
+def plot_efficiency_iter(eff_by_iter: pd.Series, filename: str):
+    """
+    Plot average potential efficiency (Phi / Phi_max) by iteration (round).
+    """
+    ax = eff_by_iter.plot(
+        title='Average potential efficiency by round \n (n_Agents = 100, n_Iterations = 100)',
+        colormap=cm,
+        grid=True
+    )
+    ax.set_ylabel('Potential ratio (Phi / Phi_max)')
+    ax.set_xlabel('Round')
+    ax.set_ylim(0.0, 1.05)
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
 
 def main():
     ap = argparse.ArgumentParser(description="Summary of simulation results (plots & stats).")
@@ -265,11 +402,17 @@ def main():
     # Basic info
     K, N = infer_K_and_N(results_market)
 
-    # Build per-iteration table with the same columns you used
+    # Build per-iteration table
     summary_df, markets_used, N = build_market_and_profit_tables(results_market, results_profits)
 
     # Aggregate by Iteration
     agg_iter = group_by_iteration_means(summary_df, markets_used)
+
+    # Efficiency (Phi / Phi_max) per (Round, Iteration)
+    eff_series = compute_efficiency_series(results_market, markets_used)
+
+    # Efficiency (Rosenthal potential ratio) per iteration, averaged across episodes
+    eff_by_iter = compute_efficiency_by_iteration(results_market, markets_used)
 
     # Agent-level stats for the scatter+reg
     agent_avg_profits, agent_avg_changes = compute_agent_level_stats(results_market, results_profits)
@@ -279,10 +422,70 @@ def main():
     plot_profit_iter(agg_iter, markets_used, outdir / 'art_Profit_Iter.png')
     plot_decision_changes(agg_iter, 'art_Decision_chg.png')
     plot_decision_changes(agg_iter, outdir / 'art_Decision_chg.png')
+    plot_efficiency_iter(eff_by_iter, outdir / 'art_Efficiency_Iter.png')
     plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, outdir / 'art_Profits_chg.png')
+    plot_efficiency_vs_changes(summary_df, eff_series, outdir / 'art_Efficiency_vs_Changes.png')
+    plot_efficiency_hist_last_iter(eff_series, results_market, outdir / 'art_Efficiency_LastIter_Hist.png')
 
-    print(f"Done. Saved plots to: {outdir}")
+    print(f"Saved plots to: {outdir}")
 
+   # === Diagnostic sheet: one row per (Round, Iteration) ===
+
+    agent_cols = [c for c in results_profits.columns if isinstance(c, int)]
+
+    # Basic profit stats per row (all agents)
+    profit_stats = pd.DataFrame(index=results_profits.index)
+    profit_stats['mean_profit'] = results_profits[agent_cols].mean(axis=1)
+    profit_stats['min_profit'] = results_profits[agent_cols].min(axis=1)
+    profit_stats['max_profit'] = results_profits[agent_cols].max(axis=1)
+    profit_stats['std_profit'] = results_profits[agent_cols].std(axis=1)
+
+    # Base diagnostic frame
+    diag = pd.DataFrame({
+        'Round': summary_df['Round'],
+        'Iteration': summary_df['Iteration'],
+        '%changes': summary_df['changes'],
+    })
+
+    diag['mean_profit'] = profit_stats['mean_profit']
+    diag['min_profit'] = profit_stats['min_profit']
+    diag['max_profit'] = profit_stats['max_profit']
+    diag['std_profit'] = profit_stats['std_profit']
+
+    diag['efficiency'] = eff_series.reindex(diag.index)
+
+    # === Per-market counts and average profits ===
+    # markets_used: e.g. [1, 2, 3, 4] or [1,2,3,4,5] (with gov)
+    market_data = results_market[agent_cols]
+    profit_data = results_profits[agent_cols]
+
+    for m in sorted(markets_used):
+        # mask: which agents are on market m in each (Round, Iteration)
+        mask_m = (market_data == m)
+
+        # number of agents on this market
+        n_m = mask_m.sum(axis=1)
+
+        # sum of profits for agents on this market
+        sum_profit_m = profit_data.where(mask_m).sum(axis=1)
+
+        # average profit for agents on this market
+        mean_profit_m = sum_profit_m / n_m.replace(0, np.nan)
+
+        diag[f'n_market_{m}'] = n_m
+        diag[f'mean_profit_market_{m}'] = mean_profit_m
+
+    # Save as CSV (easy to explore in any spreadsheet tool)
+    diag_filename = outdir / "diagnostic_rounds.csv"
+
+    diag.to_csv(
+        diag_filename,
+        index=False,
+        sep=';',        
+        decimal=',',  
+        encoding='utf-8-sig'
+    )
+    print(f"Saved diagnostic sheet to: {diag_filename}")
 
 if __name__ == "__main__":
     main()
