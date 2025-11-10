@@ -23,6 +23,8 @@ from matplotlib.colors import ListedColormap
 from typing import List, Callable
 from optimal_allocation import potential, dp_potential_max
 from config import base_spec, add_constant_market
+import sys
+
 
 plt.rcParams.update({
     "figure.dpi": 120,
@@ -420,7 +422,6 @@ def main():
     # === Plots ===
     plot_number_iter(agg_iter, markets_used, outdir / 'art_Number_Iter.png')
     plot_profit_iter(agg_iter, markets_used, outdir / 'art_Profit_Iter.png')
-    plot_decision_changes(agg_iter, 'art_Decision_chg.png')
     plot_decision_changes(agg_iter, outdir / 'art_Decision_chg.png')
     plot_efficiency_iter(eff_by_iter, outdir / 'art_Efficiency_Iter.png')
     plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, outdir / 'art_Profits_chg.png')

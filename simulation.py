@@ -28,15 +28,6 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
     if add_gov:
         spec = add_constant_market(spec, price=1.0, cost=0.0)  # adds market K+1
 
-    # Random initial allocation over markets
-    farmers = [Farmer(i, spec.markets, spec.costs) for i in range(N)]
-
-    init = {m: 0 for m in spec.markets}
-    for f in farmers:
-        init[f.market] += 1
-
-    market = Market(spec, init)    
-
     results_market, results_profits = [], []
 
     for ep in range(EPISODES):          # episodes
@@ -47,7 +38,7 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
         for f in farmers:
             init[f.market] += 1
 
-        market = Market(spec, init)    
+        market = Market(spec, init)
 
         for it in range(T):       # iterations
             profits_row = [ep, it + 1] + [0] * N

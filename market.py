@@ -8,7 +8,7 @@ class Market:
         self.state: Dict[MarketId, int] = {m: int(initial.get(m, 0)) for m in spec.markets}
 
     def get_state(self) -> Dict[MarketId, int]:
-        return self.state #dict(self.state)
+        return dict(self.state)
 
     def get_prices(self) -> Dict[MarketId, float]:
         """Compute prices p_i(n_i, state, N) for current state."""
