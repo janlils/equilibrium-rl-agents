@@ -13,9 +13,12 @@ N = 100              # number of agents
 EPISODES = 100       # number of independent runs (experiments)
 ITERATIONS = 1000    # iterations per run
 
-def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
+EVAL_FRACTION = 0.1 # last 10% of iterations in each episode = evaluation (no learning)
+
+def run_experiment(N: int, T: int, episodes: int = EPISODES, add_gov: bool = False, switch_cost = 0, seed: int = 1411):
     # Reproducibility
     np.random.seed(seed); random.seed(seed)
+    eval_start = int((1.0 - EVAL_FRACTION) * T)    
 
     base_dir = Path("results")
     base_dir.mkdir(exist_ok=True)
@@ -30,10 +33,10 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
 
     results_market, results_profits = [], []
 
-    for ep in range(EPISODES):          # episodes
-        print(f"=== Episode {ep + 1}/{EPISODES} ===")
+    for ep in range(episodes):          # episodes
+        print(f"=== Episode {ep + 1}/{episodes} ===")
 
-        farmers = [Farmer(i, spec.markets, spec.costs) for i in range(N)]
+        farmers = [Farmer(i, spec.markets, spec.costs, switch_cost = switch_cost) for i in range(N)]
         init = {m: 0 for m in spec.markets}
         for f in farmers:
             init[f.market] += 1
@@ -44,6 +47,19 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
             profits_row = [ep, it + 1] + [0] * N
             markets_row = [ep, it + 1] + [0] * N
 
+            if it == eval_start:
+                new_state = {m: 0 for m in spec.markets}
+
+                for f in farmers:
+                    f.eps = 0.0
+                    # new_m = random.choice(spec.markets)
+                    new_m = spec.markets[2]
+                    f.market = new_m
+                    new_state[new_m] += 1
+                    f.switched_last_step = False
+
+                market.state = new_state
+
             random.shuffle(farmers)
 
             # Asynchronous decisions 
@@ -51,14 +67,21 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
             for f in farmers:
                 f.choose_action(state, it)
                 old_m, new_m = f.action()
+                f.switched_last_step = (old_m != new_m)
                 state = market.update(old_m, new_m)
 
             # End-of-round accounting
             state  = market.get_state()
             prices = market.get_prices()
+
             for f in farmers:
                 p = f.calculate_profits(prices, state)
-                f.update(prices, state, it)
+
+                if it < eval_start:
+                    # LEARNING
+                    f.update(prices, state, it)
+                    f.update_epsilon(prices)
+                
                 idx = f.id + 2
                 markets_row[idx] = f.market
                 profits_row[idx] = p
@@ -101,4 +124,5 @@ def run_experiment(N: int, T: int, add_gov: bool = False, seed: int = 1411):
 
 
 if __name__ == "__main__":
-    run_experiment(N=N, T=ITERATIONS, add_gov=True)
+    # run_experiment(N=N, T=ITERATIONS, episodes=EPISODES, add_gov=True)
+    run_experiment(N=100, T=1000, episodes=10, add_gov=False, switch_cost = 1)

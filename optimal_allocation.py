@@ -106,7 +106,7 @@ def potential_normalized(
 
 
 if __name__ == "__main__":
-    # --- problem setup (EDIT HERE) ---
+    # --- problem setup ---
     N = 100
     cost: List[float] = [9.0, 8.0, 11.0, 10.0, 0.0]
 
@@ -126,7 +126,6 @@ if __name__ == "__main__":
     print("Phi_max:", phi_max)
 
     # --- 2) Quality of any given allocation (closeness to optimal potential) ---
-    # Example: your alternative allocation
     # alloc_test = [32, 23, 22, 23]
     alloc_test = [100, 0, 0, 0, 0]
     phi, phi_max_val, phi_ratio = potential_normalized(N, p_funcs, cost, alloc_test)
