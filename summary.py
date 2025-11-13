@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from matplotlib.colors import ListedColormap
 from typing import List, Callable
 from optimal_allocation import potential, dp_potential_max
-from config import base_spec, add_constant_market
+from config import base_spec, coordination_spec, add_constant_market
 import sys
 
 
@@ -122,15 +122,17 @@ def group_by_iteration_means(summary_df: pd.DataFrame, markets_used: list[int]) 
               [f"count_g{m}" for m in markets_used] + ['changes']]
     return agg
 
-def build_potential_spec(N: int, markets_used: list[int]) -> tuple[list[int], List[Callable[[int], float]], List[float]]:
+def build_potential_spec(N: int, markets_used: list[int], use_coordination: bool = True) -> tuple[list[int], List[Callable[[int], float]], List[float]]:
     """
     Build (markets_ordered, p_funcs, costs) consistent with the simulation config.
-    markets_ordered: sorted market ids actually used in the data.
-    p_funcs: list of p_i(n) functions (price as a function of local n and fixed N).
-    costs: list of c_i in the same order.
+
+    If use_coordination=True, use the coordination_spec (network-effect environment).
+    Otherwise, fall back to base_spec.
     """
-    # Start from the base 4-market spec
-    spec = base_spec(N)
+    if use_coordination:
+        spec = coordination_spec(N)
+    else:
+        spec = base_spec(N)
 
     # If there is a market id not in base_spec, assume it is the gov market
     # added via add_constant_market with price=1.0, cost=0.0
@@ -163,7 +165,7 @@ def compute_efficiency_series(results_market: pd.DataFrame,
     agent_cols = [c for c in results_market.columns if isinstance(c, int)]
     N = len(agent_cols)
 
-    markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used)
+    markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used, use_coordination=False)
     _, phi_max = dp_potential_max(N, p_funcs, costs)
     if phi_max == 0:
         phi_max = 1.0
@@ -430,7 +432,7 @@ def main():
     T = int(results_market['Round'].nunique())
     T_iter = int(results_market['Iteration'].nunique())
 
-    EVAL_FRACTION = 0.1
+    EVAL_FRACTION = 0.0
     train_iters = int((1.0 - EVAL_FRACTION) * T_iter)
     eval_start_iter = train_iters + 1 
 

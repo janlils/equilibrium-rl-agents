@@ -1,71 +1,220 @@
 # farmer.py
 import numpy as np
 from typing import Dict, Tuple
-from config import MarketId
+from config import MarketId, PriceFn
+
 GAMMA = 0.9
-ALPHA = 0.2
+ALPHA = 0.05
+PROFIT_SCALE = 10.0
+
+# --- Inflation settings ---
+# Market on which production costs are subject to inflation
+INFLATION_MARKET: MarketId = 3  # change to the market id you want
+
+# Linear inflation rate per iteration (e.g. 0.001 = +0.1% per iteration)
+INFLATION_RATE: float = 0.001
+
+# Iteration from which inflation starts to apply
+INFLATION_START: int = 0
 
 class Model:
     def __init__(self, markets: Tuple[MarketId, ...]):
-        # Feature dimension: K "action slots" + 1 bias
+        """
+        Linear function approximator for Q(s, m).
+
+        Features:
+        - profit_current: profit on the current market (scaled)
+        - profit_m: profit if the agent chose market m (scaled, includes switching cost)
+        - advantage_m: profit_m - profit_current (scaled)
+        - share_m: share of agents on market m (after potential move)
+        - bias_global: global bias term
+        - bias_market_m: one-hot market-specific bias (one coordinate per market)
+        """
         self.markets = markets
-        self.dim = len(markets) + 2
+        self.num_markets = len(markets)
+
+        # Feature vector length: 5 global features + one bias per market
+        self.dim = 5 + self.num_markets
+
+        # Initialize parameters
         self.theta = np.random.randn(self.dim) * 0.1 + 1.0
 
-    def _index(self, m: MarketId) -> int:
-        return self.markets.index(m)
+        # Mapping from market id to index in the one-hot part of the feature vector
+        self.market_index = {m: i for i, m in enumerate(self.markets)}
 
-    def s2x(self, s: Dict[MarketId, int], m: MarketId, switch_penalty: float) -> np.ndarray:
-        """Feature: [one-hot(m) * (share_after_join)] over K markets + bias."""
-        denom = max(1, sum(s.values()))
+        # Human-readable names for the first 5 coefficients
+        self.feature_names = [
+            "profit_current",
+            "profit_m",
+            "advantage_m",
+            "share_m",
+            "bias_global",
+        ]
+        # Extend with per-market biases
+        self.feature_names += [f"bias_market_{m}" for m in self.markets]
+
+    def s2x(
+        self,
+        s: Dict[MarketId, int],
+        m: MarketId,
+        current_market: MarketId,
+        costs: Dict[MarketId, float],
+        price_funcs: Dict[MarketId, PriceFn],
+        switch_cost: float,
+        profit_scale: float = PROFIT_SCALE,
+    ) -> np.ndarray:
+        """
+        Build feature vector for Q(s, m).
+
+        Monetary values are adaptively scaled to keep the features in a
+        numerically stable range, even if switching costs are very large.
+        """
+        N = max(1, sum(s.values()))
+
+        # --- Raw profits (unscaled) ---
+        price_current = price_funcs[current_market](s[current_market], s, N)
+        profit_current_raw = price_current - costs[current_market]
+
+        price_m = price_funcs[m](s[m], s, N)
+        switch_penalty = switch_cost if m != current_market else 0.0
+        profit_m_raw = price_m - costs[m] - switch_penalty
+
+        advantage_raw = profit_m_raw - profit_current_raw
+
+        # --- Adaptive scaling for monetary features ---
+        max_abs = max(
+            1.0,
+            abs(profit_current_raw),
+            abs(profit_m_raw),
+            abs(advantage_raw),
+            abs(switch_cost),
+            profit_scale,  # baseline scale from config
+        )
+        scale = max_abs
+
+        profit_current = profit_current_raw / scale
+        profit_m = profit_m_raw / scale
+        advantage_m = advantage_raw / scale
+
+        # --- Share on market m (optionally +1 if we move there) ---
+        share_m = (s[m] + (1 if m != current_market else 0)) / float(N)
+
+        # --- Build feature vector ---
         x = np.zeros(self.dim, dtype=float)
-        x[self._index(m)] = (s[m] + 1) / denom
-        
-        x[-2] = switch_penalty
 
-        x[-1] = 1.0  # bias
+        # Global features
+        x[0] = profit_current
+        x[1] = profit_m
+        x[2] = advantage_m
+        x[3] = share_m
+        x[4] = 1.0  # global bias
+
+        # Market-specific bias (one-hot)
+        idx_market = 5 + self.market_index[m]
+        x[idx_market] = 1.0
+
         return x
 
-    def predict(self, s: Dict[MarketId, int], m: MarketId, switch_penalty: float) -> float:
-        x = self.s2x(s, m, switch_penalty)
+    def predict(
+        self,
+        s: Dict[MarketId, int],
+        m: MarketId,
+        current_market: MarketId,
+        costs: Dict[MarketId, float],
+        price_funcs: Dict[MarketId, PriceFn],
+        switch_cost: float,
+        profit_scale: float = PROFIT_SCALE,
+    ) -> float:
+        """Predict Q(s, m) using the current parameter vector."""
+        x = self.s2x(s, m, current_market, costs, price_funcs, switch_cost, profit_scale)
         return float(self.theta @ x)
 
-    def grad(self, s: Dict[MarketId, int], m: MarketId, switch_penalty: float) -> np.ndarray:
-        return self.s2x(s, m, switch_penalty)
+    def grad(
+        self,
+        s: Dict[MarketId, int],
+        m: MarketId,
+        current_market: MarketId,
+        costs: Dict[MarketId, float],
+        price_funcs: Dict[MarketId, PriceFn],
+        switch_cost: float,
+        profit_scale: float = PROFIT_SCALE,
+    ) -> np.ndarray:
+        """Return the feature vector ∂Q/∂θ = x(s, m)."""
+        return self.s2x(s, m, current_market, costs, price_funcs, switch_cost, profit_scale)
+
+    def coef_dict(self) -> Dict[str, float]:
+        """Return a dictionary mapping feature names to current parameter values."""
+        return {name: float(w) for name, w in zip(self.feature_names, self.theta)}
+
+    def pretty_print(self, prefix: str = ""):
+        """Print model coefficients in a readable way."""
+        print(prefix + "Model coefficients:")
+        for name, w in zip(self.feature_names, self.theta):
+            print(f"{prefix}  {name:20s} = {w: .6f}")
+
 
 class Farmer:
-    def __init__(self, id: int, markets: Tuple[MarketId, ...], costs: Dict[MarketId, float], switch_cost = 1):
+    def __init__(
+        self,
+        id: int,
+        markets: Tuple[MarketId, ...],
+        costs: Dict[MarketId, float],
+        price_funcs: Dict[MarketId, PriceFn],
+        switch_cost: float = 1,
+    ):
         self.id = id
         self.markets = markets
         self.costs = dict(costs)
+        self.price_funcs = dict(price_funcs)
+
+        # Initial market is chosen at random
         self.market: MarketId = int(np.random.choice(markets))
+        # Market before the last move (used for Q(s_t, a_t))
+        self.prev_market: MarketId = self.market
+
         self.model = Model(markets)
 
         # --- SARSA internal state ---
         self.state_t: Dict[MarketId, int] = {}
         self.action_t: MarketId = self.market
 
-        # profit tracking
+        # Profit tracking
         self.profit: float = 0.0
         self.previous_profit: float = 0.0
 
-        # exploration rate (agent-specific epsilon)
+        # Exploration rate (agent-specific epsilon)
         self.eps: float = 0.1
 
         self.switch_cost = switch_cost
         self.switched_last_step = False
 
+
     # ---------- helpers ----------
     @staticmethod
-    def getQs(model, state, markets, current_market, switch_cost: float):
+    def getQs(
+        model: Model,
+        state: Dict[MarketId, int],
+        markets: Tuple[MarketId, ...],
+        current_market: MarketId,
+        costs: Dict[MarketId, float],
+        price_funcs: Dict[MarketId, PriceFn],
+        switch_cost: float,
+        profit_scale: float = PROFIT_SCALE,
+    ):
+        """Compute Q(s, m) for all markets given the current state and model."""
         return {
             m: model.predict(
                 state,
                 m,
-                switch_penalty=(switch_cost if m != current_market else 0.0)
+                current_market,
+                costs,
+                price_funcs,
+                switch_cost,
+                profit_scale,
             )
             for m in markets
         }
+
 
     @staticmethod
     def random_argmax(Qs: Dict[MarketId, float]) -> MarketId:
@@ -79,10 +228,18 @@ class Farmer:
     def choose_action(self, state: Dict[MarketId, int], it: int = 0) -> MarketId:
         """ε-greedy policy: choose next market to move to and store (s_t, a_t)."""
         # compute Q(s, a) for all markets
-        Qs = Farmer.getQs(self.model, state, self.markets, self.market, self.switch_cost)
+        Qs = Farmer.getQs(
+            self.model,
+            state,
+            self.markets,
+            self.market,
+            self.costs,
+            self.price_funcs,
+            self.switch_cost,
+        )
         greedy = Farmer.random_argmax(Qs)
-
         # agent-specific exploration rate
+
         eps = float(np.clip(self.eps, 0.0, 1.0))
 
         if np.random.rand() < eps:
@@ -98,21 +255,44 @@ class Farmer:
    
 
     def action(self) -> Tuple[MarketId, MarketId]:
-        """Execute chosen action (move to selected market)."""
+        """Execute chosen action (move to the selected market)."""
         old_market = self.market
+        # Remember the market from which we are moving (used as current_market in s_t)
+        self.prev_market = old_market
         self.market = self.action_t
         return old_market, self.market
 
 
-    def calculate_profits(self, prices: Dict[MarketId, float], state: Dict[MarketId, int]) -> float:
-        """Compute profit = price - cost."""
+    def calculate_profits(
+        self,
+        prices: Dict[MarketId, float],
+        state: Dict[MarketId, int],
+        it: int,
+    ) -> float:
+        """
+        Compute profit = price - (possibly time-varying) production cost.
+
+        We allow for simple linear inflation of production costs on a selected market:
+            effective_cost = base_cost * (1 + INFLATION_RATE * it)
+        starting from iteration INFLATION_START.
+        """
         self.previous_profit = self.profit
-        self.profit = prices[self.market] - self.costs[self.market]
+
+        base_cost = self.costs[self.market]
+
+        # Apply inflation only to the selected market and after INFLATION_START
+        if it >= INFLATION_START and self.market == INFLATION_MARKET:
+            inflation_factor = 1 + INFLATION_RATE * float(it)
+            effective_cost = base_cost * inflation_factor
+        else:
+            effective_cost = base_cost
+
+        self.profit = prices[self.market] - effective_cost
 
         if self.switched_last_step:
             self.profit -= self.switch_cost
 
-        return self.profit        
+        return self.profit   
 
     def update_epsilon(self, prices: Dict[MarketId, float]):
         """
@@ -138,7 +318,6 @@ class Farmer:
         else:
             self.eps = EPS_MIN
 
-
     # ------------------------------
     # SARSA update
     # ------------------------------
@@ -150,7 +329,6 @@ class Farmer:
         # Current (s_t, a_t)
         s_t = self.state_t
         a_t = self.action_t
-        last_switch_penalty = self.switch_cost if self.switched_last_step else 0
 
         # Reward based on current profit
         r_t = self.profit
@@ -159,16 +337,37 @@ class Farmer:
         s_tp1 = dict(state)
         a_tp1 = self.choose_action(s_tp1, it)
 
+        # Q(s_t, a_t): use the market before the last move (prev_market)
+        q_sa = self.model.predict(
+            s_t,
+            a_t,
+            self.prev_market,
+            self.costs,
+            self.price_funcs,
+            self.switch_cost,
+        )
 
-        # Temporal Difference (TD) target
-        q_sa = self.model.predict(s_t, a_t, last_switch_penalty)
+        # Q(s_{t+1}, a_{t+1}): use the current market after the move (self.market)
+        q_next = self.model.predict(
+            s_tp1,
+            a_tp1,
+            self.market,
+            self.costs,
+            self.price_funcs,
+            self.switch_cost,
+        )
 
-        next_switch_penalty = self.switch_cost if a_tp1 != self.market else 0.0
-        q_next = self.model.predict(s_tp1, a_tp1, next_switch_penalty)
         td = (r_t + GAMMA * q_next) - q_sa
 
-        # Gradient step
-        self.model.theta += ALPHA * td * self.model.grad(s_t, a_t, last_switch_penalty)
+        # Gradient step in parameter space
+        self.model.theta += ALPHA * td * self.model.grad(
+            s_t,
+            a_t,
+            self.prev_market,
+            self.costs,
+            self.price_funcs,
+            self.switch_cost,
+        )
 
         # Move forward in time
         self.state_t = s_tp1
