@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from matplotlib.colors import ListedColormap
 from typing import List, Callable
 from optimal_allocation import potential, dp_potential_max
-from config import base_spec, coordination_spec, add_constant_market
+from config import base_spec, add_constant_market
 import sys
 
 
@@ -104,6 +104,7 @@ def build_market_and_profit_tables(results_market: pd.DataFrame,
     out['changes'] = pd.concat(diffs).sort_index()
     # Convert to % of agents
     out['changes'] = out['changes'] / N * 100.0
+    out['stability'] = 1.0 - out['changes'] / 100.0
 
     return out, markets_used, N
 
@@ -113,26 +114,23 @@ def group_by_iteration_means(summary_df: pd.DataFrame, markets_used: list[int]) 
     Aggregate by Iteration, obtaining:
       mean, mean_g1..mean_gK, count_g1..count_gK, changes
     """
-    cols_keep = ['Iteration', 'mean', 'changes'] + \
+    cols_keep = ['Iteration', 'mean', 'changes', 'stability'] + \
                 [f"mean_g{m}" for m in markets_used] + \
                 [f"count_g{m}" for m in markets_used]
+
     agg = summary_df[cols_keep].groupby('Iteration').mean(numeric_only=True)
-    # keep column order
-    agg = agg[['mean'] + [f"mean_g{m}" for m in markets_used] +
-              [f"count_g{m}" for m in markets_used] + ['changes']]
+
+    agg = agg[['mean'] +
+            [f"mean_g{m}" for m in markets_used] +
+            [f"count_g{m}" for m in markets_used] +
+            ['changes', 'stability']]
     return agg
 
-def build_potential_spec(N: int, markets_used: list[int], use_coordination: bool = True) -> tuple[list[int], List[Callable[[int], float]], List[float]]:
+def build_potential_spec(N: int, markets_used: list[int]) -> tuple[list[int], List[Callable[[int], float]], List[float]]:
     """
     Build (markets_ordered, p_funcs, costs) consistent with the simulation config.
-
-    If use_coordination=True, use the coordination_spec (network-effect environment).
-    Otherwise, fall back to base_spec.
     """
-    if use_coordination:
-        spec = coordination_spec(N)
-    else:
-        spec = base_spec(N)
+    spec = base_spec(N)
 
     # If there is a market id not in base_spec, assume it is the gov market
     # added via add_constant_market with price=1.0, cost=0.0
@@ -165,7 +163,7 @@ def compute_efficiency_series(results_market: pd.DataFrame,
     agent_cols = [c for c in results_market.columns if isinstance(c, int)]
     N = len(agent_cols)
 
-    markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used, use_coordination=False)
+    markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used)
     _, phi_max = dp_potential_max(N, p_funcs, costs)
     if phi_max == 0:
         phi_max = 1.0
@@ -193,8 +191,7 @@ def compute_efficiency_by_iteration(results_market: pd.DataFrame,
     return eff_by_iter
 
 
-def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.DataFrame,
-                              eval_start_iter: int):
+def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.DataFrame):
     """
     For each episode (Round), compute per-agent:
       - average profit across iterations,
@@ -207,9 +204,7 @@ def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.
     agent_avg_changes = []
     for r in rounds:
         mask_round = results_market['Round'] == r
-        if eval_start_iter is not None:
-            mask_round &= results_market['Iteration'] >= eval_start_iter
-
+ 
         m = results_market.loc[mask_round, agent_cols].copy()
         p = results_profits.loc[mask_round, agent_cols].copy()
 
@@ -230,7 +225,7 @@ def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.
     return agent_avg_profits, agent_avg_changes
 
 
-def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T, eval_start_iter: int):
+def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T):
     tmp = agg_iter[[f"count_g{m}" for m in markets_used]].copy()
     tmp.columns = [f"market_{m}" for m in markets_used]
     ax = tmp.plot(
@@ -239,13 +234,12 @@ def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
     )
     ax.set_ylabel('Number of agents')
     ax.set_xlabel('Iteration')
-    ax.axvspan(0, eval_start_iter - 1, alpha=0.35, color='lightgrey')
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
 
-def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T, eval_start_iter: int):
+def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T):
     tmp = agg_iter[['mean'] + [f"mean_g{m}" for m in markets_used]].copy()
     tmp.columns = ['Total'] + [f"market_{m}" for m in markets_used]
     ax = tmp.plot(
@@ -262,25 +256,24 @@ def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
             line.set_zorder(0)
     ax.set_ylabel('Profit')
     ax.set_xlabel('Iteration')
-    ax.axvspan(0, eval_start_iter - 1, alpha=0.35, color='lightgrey')
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
 
-def plot_decision_changes(agg_iter: pd.DataFrame, filename: str, N, T, eval_start_iter: int):
-    ax = agg_iter[['changes']].plot(
-        title=f'Average decision changes by iteration \n (n_Agents = {N}, n_Episodes = {T})',
+def plot_decision_changes(agg_iter: pd.DataFrame, filename: str, N, T):
+    ax = agg_iter[['stability']].plot(
+        title=f'Stability by iteration \n(n_Agents = {N}, n_Episodes = {T})',
         colormap=cm, grid=True
     )
-    ax.set_ylabel('Stability (% of agents who changed their decision)')
+    ax.set_ylabel('Stability (fraction of agents not changing market)')
     ax.set_xlabel('Iteration')
-    ax.axvspan(0, eval_start_iter - 1, alpha=0.35, color='lightgrey')
+    ax.set_ylim(0.0, 1.0)
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
-def plot_efficiency_iter(eff_by_iter: pd.Series, filename: str, N, T, eval_start_iter: int):
+def plot_efficiency_iter(eff_by_iter: pd.Series, filename: str, N, T):
     """
     Plot average potential efficiency (Phi / Phi_max) by iteration (round).
     """
@@ -292,49 +285,84 @@ def plot_efficiency_iter(eff_by_iter: pd.Series, filename: str, N, T, eval_start
     ax.set_ylabel('Potential ratio (Phi / Phi_max)')
     ax.set_xlabel('Iteration')
     ax.set_ylim(0.0, 1.05)
-    ax.axvspan(0, eval_start_iter - 1, alpha=0.35, color='lightgrey')
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
+def plot_efficiency_and_stability_iter(agg_iter: pd.DataFrame,
+                                       eff_by_iter: pd.Series,
+                                       filename: str,
+                                       N,
+                                       T):
+    """
+    Plot efficiency and stability over iterations.
+    """
+    # Build a DataFrame indexed by iteration
+    df = pd.DataFrame({
+        'efficiency': eff_by_iter,
+        'stability': agg_iter['stability']
+    })
+
+    # Remove rows where any of the series is NaN
+    df = df.dropna(subset=['efficiency', 'stability'])
+
+    ax = df[['efficiency', 'stability']].plot(
+        title=f'Efficiency and stability by iteration\n(n_Agents = {N}, n_Episodes = {T})',
+        grid=True
+    )
+
+    ax.set_xlabel('Iteration')
+    ax.set_ylim(0.0, 1.0)
+
+    ax.legend(['Efficiency (Phi / Phi_max)', 'Stability (1 = no agent changed)'])
+
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
+
 def plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, filename: str):
-    # Flatten 
+    # Flatten nested lists
     def flatten(xss):
         return [x for xs in xss for x in xs]
 
-    x = [v * 100 for v in flatten(agent_avg_changes)]  # % changes
+    # agent_avg_changes is a fraction in [0,1]: share of iterations with a change
+    changes = flatten(agent_avg_changes)
+    stability = [1.0 - v for v in changes]  # 1 = no change, 0 = always changed
     y = flatten(agent_avg_profits)
 
     ax = sns.regplot(
-        x=x, y=y,
+        x=stability,
+        y=y,
         scatter_kws={'s': 1, 'color': '#24325F'},
         line_kws=dict(color='#FB6467')
     )
-    ax.set(title='Profits vs. % of changed decisions \n (each dot represents single agent in one evaluation period)')
+    ax.set(
+        title='Profits vs. stability \n(each dot represents a single agent in one episode)'
+    )
+    ax.set_xlabel('Stability (fraction of agents not changing market)')
     ax.set_ylabel('Profit')
-    ax.set_xlabel('% of changed decisions')
+
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
 
+
 def plot_efficiency_vs_changes(summary_df: pd.DataFrame,
                                eff_series: pd.Series,
-                               filename: str, eval_start_iter: int):
+                               filename: str):
     """
     Scatter: each point is one (Round, Iteration).
     X axis: potential ratio Phi / Phi_max.
-    Y axis: % of agents who changed market between this and next iteration.
+    Y axis: stability in [0,1], where 1 means no agent changed market.
     """
-    df = summary_df[['Iteration', 'changes']].copy()
+    # summary_df is expected to contain 'stability' computed earlier
+    df = summary_df[['Iteration', 'stability']].copy()
     df['efficiency'] = eff_series.reindex(df.index)
 
-    if eval_start_iter is not None:
-        df = df[df['Iteration'] >= eval_start_iter]
-
-    # Drop rows with NaN (np. ostatnia iteracja epizodu)
-    df = df.dropna(subset=['changes', 'efficiency'])
+    # Drop rows with NaN (e.g., last iteration in each round)
+    df = df.dropna(subset=['stability', 'efficiency'])
 
     x = df['efficiency']
-    y = df['changes']
+    y = df['stability']
 
     ax = sns.regplot(
         x=x,
@@ -342,43 +370,79 @@ def plot_efficiency_vs_changes(summary_df: pd.DataFrame,
         scatter_kws={'s': 1, 'color': '#24325F'},
         line_kws=dict(color='#FB6467')
     )
-    ax.set_title('Efficiency vs. stability \n (each dot is one evaluation period in one episode)')
+    ax.set_title('Efficiency vs. stability \n(each dot is one iteration in one episode)')
     ax.set_xlabel('Efficiency (potential ratio)')
-    ax.set_ylabel('Stability (% of agents who changed market)')
+    ax.set_ylabel('Stability (fraction of agents not changing market)')
+
+    plt.ylim(0.0, 1.0)
+
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
+
 
 def plot_efficiency_hist_last_iter(eff_series: pd.Series,
                                    results_market: pd.DataFrame,
                                    filename: str):
     """
-    Histogram of efficiency (Phi / Phi_max) in the final iteration of each episode.
-    One observation per episode.
+    Plot mean efficiency across all iterations for each episode.
+    Display the mean efficiency value on top of each bar.
     """
-    df = results_market[['Round', 'Iteration']].copy()
-    df['efficiency'] = eff_series.reindex(df.index)
 
-    # Last iteration index (assumed common across episodes)
-    last_iter = df['Iteration'].max()
+    # Build dataframe linking Round <-> Efficiency
+    df = pd.DataFrame({
+        'Round': results_market['Round'],
+        'Efficiency': eff_series
+    }).dropna()
 
-    eff_last = df.loc[df['Iteration'] == last_iter, 'efficiency'].dropna()
+    # Compute mean efficiency per episode  <-- CHANGED
+    df_mean = df.groupby('Round', as_index=False)['Efficiency'].mean().sort_values('Round')
 
-    plt.hist(eff_last, bins=20, edgecolor='black')
-    plt.title('Distribution of efficiency in the final iteration')
-    plt.xlabel('Potential ratio (Phi / Phi_max)')
-    plt.ylabel('Number of episodes')
+    # Extract values
+    rounds = df_mean['Round'].values
+    values = df_mean['Efficiency'].values
+    x = np.arange(len(rounds))
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(x, values, alpha=0.7, color="#24325F")
+
+    # Add efficiency labels above each bar (rounded)
+    for idx, bar in enumerate(bars):
+        height = bar.get_height()
+        eff = round(values[idx], 2)      # keep your label style
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            height + 0.02,
+            str(eff),                    # efficiency on the label
+            ha='center',
+            va='bottom',
+            fontsize=10,
+            fontweight='bold'
+        )
+
+    plt.xticks(x, [f"Ep {ep}" for ep in rounds])
+    plt.ylim(0, 1.05)
+
+    plt.title("Mean efficiency across all iterations (per episode)")
+    plt.xlabel("Episode")
+    plt.ylabel("Mean efficiency (Phi / Phi_max)")
+
+    plt.grid(axis='y', linestyle='--', alpha=0.4)
+
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
-
-
-
 
 def main():
     ap = argparse.ArgumentParser(description="Summary of simulation results (plots & stats).")
     ap.add_argument("--market", help="Path to results_market_*.pickle")
     ap.add_argument("--profits", help="Path to results_profits_*.pickle")
     ap.add_argument("--outdir", help="Directory to save PNG plots")
+    ap.add_argument(
+        "--episode",
+        type=int,
+        help="If set, only this episode (Round index, starting at 1) will be analyzed and plotted."
+    )
     args = ap.parse_args()
+
 
     # --- If no pickle paths are provided, automatically select the latest run ---
     if not args.market or not args.profits:
@@ -416,15 +480,57 @@ def main():
     results_market = load_pickle(args.market)
     results_profits = load_pickle(args.profits)
 
+    potential_path = Path(args.market).with_name(
+        Path(args.market).name.replace("results_market", "results_potential")
+    )
+
+    df_potential = None
+    if potential_path.exists():
+        df_potential = load_pickle(potential_path)
+        if not isinstance(df_potential, pd.DataFrame):
+            df_potential = pd.DataFrame(df_potential)
+        print(f"Loaded dynamic potential from {potential_path.name}")
+    else:
+        print("Warning: results_potential*.pickle not found. Falling back to static potential.")
+
     # If raw lists were saved, coerce to DataFrame
     if not isinstance(results_market, pd.DataFrame):
         results_market = pd.DataFrame(results_market)
     if not isinstance(results_profits, pd.DataFrame):
         results_profits = pd.DataFrame(results_profits)
 
+    # Optional: restrict analysis to a single episode (Round)
+    if args.episode is not None:
+        ep = args.episode
+        available_rounds = results_market['Round'].unique()
+
+        if ep not in available_rounds:
+            print(f"Error: requested episode (Round) {ep} not found in data. Available rounds: {sorted(available_rounds)}")
+            sys.exit(1)
+
+        # Filter both market and profits data to the selected episode
+        results_market = results_market[results_market['Round'] == ep].copy()
+        results_profits = results_profits[results_profits['Round'] == ep].copy()
+
+        print(f"Running summary for a single episode: Round = {ep}")
+    else:
+        ep = None
+
     # --- Prepare output directory ---
     market_path = Path(args.market)
-    outdir = Path(args.outdir or market_path.parent)
+
+    # Base output dir: use args.outdir if given, otherwise "<run_dir>/plots"
+    if args.outdir:
+        base_outdir = Path(args.outdir)
+    else:
+        base_outdir = market_path.parent / "plots"
+
+    # If a single episode is selected, put plots into a subdirectory "episode_<ep>"
+    if ep is not None:
+        outdir = base_outdir / f"episode_{ep}"
+    else:
+        outdir = base_outdir
+
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Basic info
@@ -432,32 +538,40 @@ def main():
     T = int(results_market['Round'].nunique())
     T_iter = int(results_market['Iteration'].nunique())
 
-    EVAL_FRACTION = 0.0
-    train_iters = int((1.0 - EVAL_FRACTION) * T_iter)
-    eval_start_iter = train_iters + 1 
-
     # Build per-iteration table
     summary_df, markets_used, N = build_market_and_profit_tables(results_market, results_profits)
 
     # Aggregate by Iteration
     agg_iter = group_by_iteration_means(summary_df, markets_used)
 
-    # Efficiency (Phi / Phi_max) per (Round, Iteration)
-    eff_series = compute_efficiency_series(results_market, markets_used)
+    if df_potential is not None:
+        key = ['Round', 'Iteration']
+        tmp = results_market[key].merge(
+            df_potential[key + ['Phi_ratio']],
+            on=key,
+            how='left'
+        )
+        eff_series = tmp['Phi_ratio']
+        eff_series.name = "efficiency"
 
-    # Efficiency (Rosenthal potential ratio) per iteration, averaged across episodes
-    eff_by_iter = compute_efficiency_by_iteration(results_market, markets_used)
+        eff_df = results_market[['Iteration']].copy()
+        eff_df['efficiency'] = eff_series
+        eff_by_iter = eff_df.groupby('Iteration')['efficiency'].mean()
+    else:
+        eff_series = compute_efficiency_series(results_market, markets_used)
+        eff_by_iter = compute_efficiency_by_iteration(results_market, markets_used)
 
     # Agent-level stats for the scatter+reg
-    agent_avg_profits, agent_avg_changes = compute_agent_level_stats(results_market, results_profits, eval_start_iter = eval_start_iter)
+    agent_avg_profits, agent_avg_changes = compute_agent_level_stats(results_market, results_profits)
 
     # === Plots ===
-    plot_number_iter(agg_iter, markets_used, outdir / 'art_Number_Iter.png', N, T, eval_start_iter = eval_start_iter)
-    plot_profit_iter(agg_iter, markets_used, outdir / 'art_Profit_Iter.png', N, T, eval_start_iter = eval_start_iter)
-    plot_decision_changes(agg_iter, outdir / 'art_Decision_chg.png', N, T, eval_start_iter = eval_start_iter)
-    plot_efficiency_iter(eff_by_iter, outdir / 'art_Efficiency_Iter.png', N, T, eval_start_iter = eval_start_iter)
+    plot_number_iter(agg_iter, markets_used, outdir / 'art_Number_Iter.png', N, T)
+    plot_profit_iter(agg_iter, markets_used, outdir / 'art_Profit_Iter.png', N, T)
+    # plot_decision_changes(agg_iter, outdir / 'art_Decision_chg.png', N, T)
+    # plot_efficiency_iter(eff_by_iter, outdir / 'art_Efficiency_Iter.png', N, T)
+    plot_efficiency_and_stability_iter(agg_iter, eff_by_iter, outdir / 'art_Efficiency_Stability_Iter.png', N, T)
     plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, outdir / 'art_Profits_chg.png')
-    plot_efficiency_vs_changes(summary_df, eff_series, outdir / 'art_Efficiency_vs_Changes.png', eval_start_iter = eval_start_iter)
+    plot_efficiency_vs_changes(summary_df, eff_series, outdir / 'art_Efficiency_vs_Changes.png')
     plot_efficiency_hist_last_iter(eff_series, results_market, outdir / 'art_Efficiency_LastIter_Hist.png')
 
     print(f"Saved plots to: {outdir}")
@@ -485,7 +599,20 @@ def main():
     diag['max_profit'] = profit_stats['max_profit']
     diag['std_profit'] = profit_stats['std_profit']
 
-    diag['efficiency'] = eff_series.reindex(diag.index)
+    # Add dynamic potential if available
+    if df_potential is not None:
+        key = ['Round', 'Iteration']
+        merged = summary_df[key].merge(
+            df_potential[key + ['Phi', 'Phi_max', 'Phi_ratio']],
+            on=key,
+            how='left'
+        )
+
+        diag['Phi'] = merged['Phi']
+        diag['Phi_max'] = merged['Phi_max']
+        diag['efficiency'] = merged['Phi_ratio']   # DYNAMICZNE efficiency
+    else:
+        diag['efficiency'] = eff_series.reindex(summary_df.index)  # fallback
 
     # === Per-market counts and average profits ===
     # markets_used: e.g. [1, 2, 3, 4] or [1,2,3,4,5] (with gov)

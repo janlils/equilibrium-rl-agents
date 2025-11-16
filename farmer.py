@@ -1,21 +1,12 @@
 # farmer.py
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from config import MarketId, PriceFn
 
+INFLATION_RULES: Dict[Optional[int], Dict[str, float]] = {}
 GAMMA = 0.9
 ALPHA = 0.05
 PROFIT_SCALE = 10.0
-
-# --- Inflation settings ---
-# Market on which production costs are subject to inflation
-INFLATION_MARKET: MarketId = 3  # change to the market id you want
-
-# Linear inflation rate per iteration (e.g. 0.001 = +0.1% per iteration)
-INFLATION_RATE: float = 0.001
-
-# Iteration from which inflation starts to apply
-INFLATION_START: int = 0
 
 class Model:
     def __init__(self, markets: Tuple[MarketId, ...]):
@@ -188,6 +179,8 @@ class Farmer:
         self.switch_cost = switch_cost
         self.switched_last_step = False
 
+        self.output_multiplier: Dict[MarketId, float] = {int(m): 1.0 for m in markets}
+
 
     # ---------- helpers ----------
     @staticmethod
@@ -270,29 +263,40 @@ class Farmer:
         it: int,
     ) -> float:
         """
-        Compute profit = price - (possibly time-varying) production cost.
+        Compute profit = price * q - production cost.
+        q (output per agent) captures technology shocks: agent sells q units but pays cost once.
 
-        We allow for simple linear inflation of production costs on a selected market:
-            effective_cost = base_cost * (1 + INFLATION_RATE * it)
-        starting from iteration INFLATION_START.
+        Note: Any time-varying costs or inflation should be applied to self.costs[...] upstream
+        (e.g., by a shock engine), so here we just read the current cost.
         """
         self.previous_profit = self.profit
+        q = float(self.output_multiplier.get(self.market, 1.0))
+        price = prices[self.market]
 
         base_cost = self.costs[self.market]
 
-        # Apply inflation only to the selected market and after INFLATION_START
-        if it >= INFLATION_START and self.market == INFLATION_MARKET:
-            inflation_factor = 1 + INFLATION_RATE * float(it)
-            effective_cost = base_cost * inflation_factor
-        else:
-            effective_cost = base_cost
+        # Find market-specific rule or fall back to global rule
+        rule = INFLATION_RULES.get(self.market)
+        if rule is None:
+            rule = INFLATION_RULES.get(None)
 
-        self.profit = prices[self.market] - effective_cost
+        if rule is not None:
+            start = int(rule.get("start", 0))
+            rate  = float(rule.get("rate", 0.0))
+            if it >= start:
+                cost = base_cost * (1.0 + rate * float(it - start))
+            else:
+                cost = base_cost
+        else:
+            cost = base_cost
+
+        self.profit = price * q - cost
 
         if self.switched_last_step:
             self.profit -= self.switch_cost
 
-        return self.profit   
+        return self.profit
+        
 
     def update_epsilon(self, prices: Dict[MarketId, float]):
         """
