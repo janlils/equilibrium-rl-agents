@@ -22,16 +22,23 @@ def run_experiment(
     add_gov: bool = False,
     switch_cost = 0,
     seed: int = 1411,
-    scenario: list[dict] | None = None,   
+    scenario: list[dict] | None = None,
+    exp_id: str | None = None, 
+    random_policy: bool = False,
+    model_type: str = "full",
 ):
+
     # Reproducibility
     np.random.seed(seed); random.seed(seed)
+    INFLATION_RULES.clear()
 
     base_dir = Path("results")
     base_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    suffix = "_gov" if add_gov else ""
-    run_dir = base_dir / f"run_{timestamp}{suffix}"
+    id_suffix = f"_{exp_id}" if exp_id else ""
+    gov_suffix = "_gov" if add_gov else ""
+    run_dir_name = f"run_{timestamp}{id_suffix}{gov_suffix}"
+    run_dir = base_dir / run_dir_name
     run_dir.mkdir(exist_ok=False)
 
     spec = base_spec(N)
@@ -49,12 +56,14 @@ def run_experiment(
         print(f"=== Episode {ep + 1}/{episodes} ===")
 
         farmers = [
-            Farmer(i, spec.markets, spec.costs, spec.price_funcs, switch_cost=switch_cost)
+            Farmer(i, spec.markets, spec.costs, spec.price_funcs, switch_cost=switch_cost, model_type=model_type,)
             for i in range(N)
         ]
 
         init = {m: 0 for m in spec.markets}
         for f in farmers:
+            if random_policy:
+                f.random_policy = True
             init[f.market] += 1
 
         market = Market(spec, init)
@@ -83,16 +92,17 @@ def run_experiment(
             state  = market.get_state()
             prices = market.get_prices()
 
-            # --- Dynamic Rosenthal potential for this iteration ---
+
+            # --- Theoretical potential for this iteration ---
             markets_ordered = sorted(spec.markets)
 
-            # Current allocation of agents
+            # Current allocation of agents (RL outcome)
             alloc = [state[m] for m in markets_ordered]
 
             # Effective costs in this iteration (cost shocks + inflation)
-            costs_iter = []
+            costs_iter: list[float] = []
             for m in markets_ordered:
-                base_cost = farmers[0].costs[m]  # already includes cost_shock
+                base_cost = farmers[0].costs[m]  # already includes cost shocks
 
                 rule = INFLATION_RULES.get(m)
                 if rule is None:
@@ -100,7 +110,7 @@ def run_experiment(
 
                 if rule is not None:
                     start = int(rule.get("start", 0))
-                    rate  = float(rule.get("rate", 0.0))
+                    rate = float(rule.get("rate", 0.0))
                     if it >= start:
                         cost_eff = base_cost * (1.0 + rate * float(it - start))
                     else:
@@ -110,43 +120,71 @@ def run_experiment(
 
                 costs_iter.append(cost_eff)
 
-            # Effective counts (technology, entrants, external_counts)
-            eff_counts = market.get_effective_counts()
+            # Base participant counts (RL + external), without technology multiplier.
+            # This matches how N should be interpreted: number of heads, not productivity.
+            base_counts = {
+                m: market.state[m] + market.external_counts[m]
+                for m in markets_ordered
+            }
+            N_dyn = sum(base_counts.values())
 
-            # Build price functions for potential calculation
+            # Per-market output multiplier (technology) for this iteration.
+            # This captures how many units a single RL agent sells on market m.
+            q_iter = {
+                m: float(market.n_multiplier[m])
+                for m in markets_ordered
+            }
+
+            # Build "price" functions for potential calculation.
+            # IMPORTANT: here p_i(k) returns *revenue per agent* (price * q),
+            # not the unit price itself. Potential then approximates sum of profits:
+            # Phi ≈ sum_k (revenue_per_agent(k) - cost).
             def make_p(m_id):
                 def p(n, _m=m_id):
-                    # RL + exogenous raw counts
-                    raw_counts = {}
-                    for j in market.spec.markets:
-                        if j == _m:
-                            raw_counts[j] = n + market.external_counts[j]
-                        else:
-                            raw_counts[j] = market.state[j] + market.external_counts[j]
+                    # Hypothetical number of RL agents on market _m: n
+                    # plus exogenous participants
+                    raw = n + market.external_counts[_m]
 
-                    # Apply technology multipliers
-                    eff_counts_tmp = {}
-                    for j in market.spec.markets:
-                        eff_counts_tmp[j] = int(round(raw_counts[j] * market.n_multiplier[j]))
+                    # Apply technology multiplier for this market to local congestion
+                    n_eff_m = int(round(raw * market.n_multiplier[_m]))
 
-                    N_eff_tmp = sum(eff_counts_tmp.values())
-                    n_eff_m = eff_counts_tmp[_m]
+                    # Minimal state dict for compatibility with price functions
+                    eff_counts_tmp = {_m: n_eff_m}
 
-                    return market.spec.price_funcs[_m](n_eff_m, eff_counts_tmp, N_eff_tmp) + market.price_add[_m]
+                    # Compute unit price as in the market (using dynamic N if you use variant A).
+                    unit_price = (
+                        market.spec.price_funcs[_m](n_eff_m, eff_counts_tmp, N_dyn)
+                        + market.price_add[_m]
+                    )
+
+                    # Convert unit price into per-agent revenue using technology multiplier q.
+                    revenue_per_agent = unit_price * q_iter[_m]
+                    return revenue_per_agent
                 return p
 
-
+            # One "price" function per market: p_i(k) = revenue_per_agent(k)
             p_funcs_iter = [make_p(m) for m in markets_ordered]
 
-            # Current potential
+            # Current potential for the RL allocation (approximate total profit)
             phi = potential(p_funcs_iter, costs_iter, alloc)
 
-            # Max potential for this game instance
-            _, phi_max = dp_potential_max(N, p_funcs_iter, costs_iter)
+            # Optimal potential and allocation for this game instance
+            alloc_max, phi_max = dp_potential_max(N, p_funcs_iter, costs_iter)
             phi_ratio = phi / phi_max if phi_max != 0 else 1.0
 
-            # Save potential metrics
-            results_potential.append([ep, it + 1, phi, phi_max, phi_ratio])
+            # Actual allocation, optimal allocation and current prices per market
+            actual_alloc_row = alloc
+            optimal_alloc_row = alloc_max
+            price_row = [prices[m] for m in markets_ordered]
+
+            # Save potential metrics + allocations + prices
+            results_potential.append(
+                [ep, it + 1, phi, phi_max, phi_ratio]
+                + actual_alloc_row
+                + optimal_alloc_row
+                + price_row
+            )
+
 
             for f in farmers:
                 p = f.calculate_profits(prices, state, it)
@@ -198,7 +236,15 @@ def run_experiment(
     with open(run_dir / f"results_profits{suffix}.pickle", "wb") as f:
         pickle.dump(df_profits, f)
 
-    cols_pot = ['Round', 'Iteration', 'Phi', 'Phi_max', 'Phi_ratio']
+    markets_ordered = sorted(spec.markets)
+
+    cols_pot = (
+        ['Round', 'Iteration', 'Phi', 'Phi_max', 'Phi_ratio']
+        + [f"n_market_{m}" for m in markets_ordered]          # actual allocation per market
+        + [f"opt_n_market_{m}" for m in markets_ordered]      # optimal allocation per market
+        + [f"price_market_{m}" for m in markets_ordered]      # market prices
+    )
+
     df_potential = pd.DataFrame(results_potential, columns=cols_pot)
 
     with open(run_dir / f"results_potential{suffix}.pickle", "wb") as f:
@@ -214,74 +260,74 @@ if __name__ == "__main__":
         add_gov=False, switch_cost=0
     )
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0
-    )
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0
+    # )
 
-    # One-off positive price bump on market 2 at iteration 200
-    scenario_1 = [
-        {"when": {"iter": 200}, "price_bump": {2: +3.0}},
-    ]
+    # # One-off positive price bump on market 2 at iteration 200
+    # scenario_1 = [
+    #     {"when": {"iter": 200}, "price_bump": {2: +3.0}},
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_1
-    )
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_1
+    # )
 
-    # Influx of 15 exogenous participants on market 1 in iteration 300
-    scenario_2 = [
-        {"when": {"iter": 300}, "entrants": {1: 15}},
-    ]
+    # # Influx of 15 exogenous participants on market 1 in iteration 300
+    # scenario_2 = [
+    #     {"when": {"iter": 300}, "entrants": {1: 15}},
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_2
-    )    
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_2
+    # )    
 
-    # Technology shock: from it>=400 each agent on market 3 effectively counts as 2
-    scenario_3 = [
-        {"when": {"from_iter": 400}, "technology": {3: 2.0}},
-    ]
+    # # Technology shock: from it>=400 each agent on market 3 effectively counts as 2
+    # scenario_3 = [
+    #     {"when": {"from_iter": 400}, "technology": {3: 2.0}},
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_3
-    )    
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_3
+    # )    
 
-    # Increase transaction (switching) cost from it>=500
-    scenario_4 = [
-        {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-    ]
+    # # Increase transaction (switching) cost from it>=500
+    # scenario_4 = [
+    #     {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_4
-    )    
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_4
+    # )    
 
-    # Cost shock: from it=600 on market 4 (+2 absolute)
-    scenario_5 = [
-        {"when": {"iter": 600}, "cost_shock": {4: +2}},
-    ]
+    # # Cost shock: from it=600 on market 4 (+2 absolute)
+    # scenario_5 = [
+    #     {"when": {"iter": 600}, "cost_shock": {4: +2}},
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_5
-    )    
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_5
+    # )    
 
-    # Cost inflation – linear on market 1 from it=700 at +1% per iteration
-    scenario_6 = [
-        {"when": {"from_iter": 700}, "inflation": {"market": 1, "start": 700, "rate": 0.01}}
-    ]
+    # # Cost inflation – linear on market 1 from it=700 at +1% per iteration
+    # scenario_6 = [
+    #     {"when": {"from_iter": 700}, "inflation": {"market": 1, "start": 700, "rate": 0.01}}
+    # ]
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_6
-    )    
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_6
+    # )    
 
-    scenario_7 = scenario_1 + scenario_2 + scenario_3 + scenario_4 + scenario_5 + scenario_6
+    # scenario_7 = scenario_1 + scenario_2 + scenario_3 + scenario_4 + scenario_5 + scenario_6
 
-    run_experiment(
-        N=100, T=1000, episodes=10,
-        add_gov=True, switch_cost=0, scenario=scenario_7
-    )
+    # run_experiment(
+    #     N=100, T=1000, episodes=10,
+    #     add_gov=True, switch_cost=0, scenario=scenario_7
+    # )

@@ -24,6 +24,9 @@ from typing import List, Callable
 from optimal_allocation import potential, dp_potential_max
 from config import base_spec, add_constant_market
 import sys
+import json  # for loading scenario metadata from config.json
+from typing import List, Callable, Optional, Dict, Any  # if not already imported
+
 
 
 plt.rcParams.update({
@@ -33,6 +36,7 @@ plt.rcParams.update({
 
 colors_hex = [ '#24325F', '#82491E', '#B7E4F9', '#E89242','#FB6467', '#69C8EC']
 cm = ListedColormap(colors_hex)
+
 
 def load_pickle(path: str):
     with open(path, "rb") as f:
@@ -223,6 +227,183 @@ def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.
         agent_avg_changes.append(list(changed.fillna(0.0)))
 
     return agent_avg_profits, agent_avg_changes
+
+def plot_allocation_with_optimal(
+    agg_iter: pd.DataFrame,
+    df_potential: Optional[pd.DataFrame],
+    markets_used: List[int],
+    filename: str,
+    N: int,
+    T: int,
+    scenario_events: Optional[List[Dict[str, Any]]] = None,
+    scenario_name: Optional[str] = None,
+):
+    """
+    Line plot of average number of agents per market by iteration, with
+    optional overlay of optimal allocation and vertical lines for shocks.
+
+    - x-axis: Iteration
+    - y-axis: Number of agents
+    - solid lines: actual RL allocation (avg across episodes)
+    - dashed / lighter lines: optimal allocation (avg across episodes)
+    - vertical dashed lines: shock events from the scenario definition
+    """
+    # Prepare x-axis from aggregated data
+    x = agg_iter.index.values
+
+    # Prepare optimal allocation aggregated by Iteration if available
+    opt_by_iter = None
+    if df_potential is not None:
+        # We expect columns: 'Iteration', 'n_market_m', 'opt_n_market_m'
+        cols = ['Iteration']
+        for m in markets_used:
+            cols.append(f"n_market_{m}")
+            cols.append(f"opt_n_market_{m}")
+
+        existing = [c for c in cols if c in df_potential.columns]
+        if len(existing) > 1:  # at least Iteration + something
+            opt_by_iter = (
+                df_potential[existing]
+                .groupby('Iteration')
+                .mean(numeric_only=True)
+            )
+
+    plt.figure(figsize=(10, 6))
+    ax = plt.gca()
+
+    # Plot actual allocation for each market
+    for i, m in enumerate(sorted(markets_used)):
+        color = colors_hex[i % len(colors_hex)]
+        col_actual = f"count_g{m}"
+        if col_actual not in agg_iter.columns:
+            continue
+
+        y_actual = agg_iter[col_actual].values
+
+        # Actual RL allocation: thinner, slightly transparent line
+        ax.plot(
+            x,
+            y_actual,
+            label=f"market_{m} actual",
+            linewidth=1.0,
+            color=color,
+            alpha=0.7,
+        )
+
+        # Optional: optimal allocation overlay, more visible
+        if opt_by_iter is not None:
+            col_opt = f"opt_n_market_{m}"
+            if col_opt in opt_by_iter.columns:
+                # Align by Iteration; reindex on agg_iter.index
+                y_opt = opt_by_iter[col_opt].reindex(agg_iter.index).values
+                ax.plot(
+                    x,
+                    y_opt,
+                    linewidth=3.5,             # thicker outline
+                    linestyle="--",
+                    color="black",             # outline color
+                    alpha=0.8,
+                    zorder=2,
+                )
+                ax.plot(
+                    x,
+                    y_opt,
+                    label=f"market_{m} optimal",
+                    linewidth=2.0,          # thicker line for optimal
+                    linestyle="--",
+                    color=color,
+                    alpha=0.9,
+                )
+
+    # Collect shock markers (iteration, label)
+    shock_marks = []
+    if scenario_events:
+        for ev in scenario_events:
+            when = ev.get("when", {})
+            it = None
+
+            # Single-iteration shock
+            if "iter" in when:
+                it = int(when["iter"])
+            # From-iteration shock: mark the start
+            elif "from_iter" in when:
+                it = int(when["from_iter"])
+
+            if it is None:
+                continue
+
+            # Determine event type: first key that is not "when"
+            event_type = next((k for k in ev.keys() if k != "when"), None)
+            if event_type is None:
+                event_type = "shock"
+
+            # Try to infer market for label, e.g. "price_bump_m2", "inflation_m3"
+            market_id = None
+            payload = ev.get(event_type, {})
+
+            if isinstance(payload, dict):
+                # Case 1: explicit "market" field, e.g. {"market": 3, "rate": ...}
+                if "market" in payload:
+                    market_id = payload["market"]
+                else:
+                    # Case 2: dict keyed by market id, e.g. {2: +5.0} or {4: +4}
+                    # Take the first key that looks like a market identifier
+                    for k in payload.keys():
+                        # Try to treat numeric or numeric-string keys as market IDs
+                        if isinstance(k, int):
+                            market_id = k
+                            break
+                        if isinstance(k, str) and k.isdigit():
+                            market_id = int(k)
+                            break
+
+            # Build compact label: event_type[_mX]
+            if market_id is not None:
+                label = f"{event_type}_m{market_id}"
+            else:
+                label = event_type
+
+            shock_marks.append((it, label))
+
+    # Draw vertical lines and labels for shocks
+    if shock_marks:
+        # Get current limits based on data before adding text
+        ymin, ymax = ax.get_ylim()
+        y_range = ymax - ymin if ymax > ymin else 1.0
+
+        # Place labels slightly above the bottom of the plot area
+        label_y = ymin + 0.02 * y_range
+
+        for it, label in shock_marks:
+            ax.axvline(
+                x=it,
+                color="red",
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.7,
+            )
+            ax.text(
+                it,
+                label_y,
+                label,
+                rotation=90,
+                va="bottom",
+                ha="right",
+                fontsize=8,
+                alpha=0.8,
+            )
+
+    ax.set_title(
+        f"Average allocation per market by iteration\n"
+        f"(n_Agents = {N}, n_Episodes = {T})"
+    )
+    ax.set_ylabel("Number of agents")
+    ax.set_xlabel("Iteration")
+
+    ax.legend(loc="upper right", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(filename, bbox_inches="tight", dpi=300)
+    plt.close()
 
 
 def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T):
@@ -441,8 +622,12 @@ def main():
         type=int,
         help="If set, only this episode (Round index, starting at 1) will be analyzed and plotted."
     )
+    ap.add_argument(
+        "--exp_id",
+        help="Experiment ID used in run directory name (run_<timestamp>_<exp_id>[_...]). "
+             "Used only when --market/--profits are not provided."
+    )
     args = ap.parse_args()
-
 
     # --- If no pickle paths are provided, automatically select the latest run ---
     if not args.market or not args.profits:
@@ -451,14 +636,27 @@ def main():
             print("Error: 'results/' directory not found. Run a simulation first.")
             sys.exit(1)
 
-        # Find all subdirectories that look like run_YYYY-MM-DD_HH-MM-SS
+        # Find all subdirectories that start with "run_"
         run_dirs = sorted([d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("run_")])
         if not run_dirs:
             print("Error: No result folders found in 'results/'.")
             sys.exit(1)
 
-        latest_run = run_dirs[-1]
-        print(f"Using the most recent results folder: {latest_run}")
+        # If experiment ID is provided, filter runs by this ID
+        if args.exp_id:
+            matching = [d for d in run_dirs if f"_{args.exp_id}" in d.name]
+            if not matching:
+                print(f"Error: no run directory found for exp_id='{args.exp_id}'.")
+                print("Available run directories:")
+                for d in run_dirs:
+                    print("  -", d.name)
+                sys.exit(1)
+            latest_run = matching[-1]
+            print(f"Using run folder for exp_id='{args.exp_id}': {latest_run}")
+        else:
+            # Fallback: most recent run by name
+            latest_run = run_dirs[-1]
+            print(f"Using the most recent results folder: {latest_run}")
 
         # Look for pickle files inside that folder
         market_files = sorted(latest_run.glob("results_market*.pickle"))
@@ -492,6 +690,29 @@ def main():
         print(f"Loaded dynamic potential from {potential_path.name}")
     else:
         print("Warning: results_potential*.pickle not found. Falling back to static potential.")
+
+    # Try to load scenario metadata (scenario events and name) from config.json
+    scenario_events: List[Dict[str, Any]] = []
+    scenario_name: Optional[str] = None
+
+    try:
+        run_dir = Path(args.market).parent
+        cfg_path = run_dir / "config.json"
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            # Expected structure written by experiments.py
+            scenario_events = meta.get("scenario", []) or []
+            scenario_name = meta.get("scenario_name") or meta.get("exp_id")
+            print(f"Loaded scenario metadata from {cfg_path.name}")
+        else:
+            print("No config.json found in run directory; skipping shock markers.")
+    except Exception as e:
+        print(f"Warning: could not load scenario metadata: {e}")
+        scenario_events = []
+        scenario_name = None
+
 
     # If raw lists were saved, coerce to DataFrame
     if not isinstance(results_market, pd.DataFrame):
@@ -573,6 +794,20 @@ def main():
     plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, outdir / 'art_Profits_chg.png')
     plot_efficiency_vs_changes(summary_df, eff_series, outdir / 'art_Efficiency_vs_Changes.png')
     plot_efficiency_hist_last_iter(eff_series, results_market, outdir / 'art_Efficiency_LastIter_Hist.png')
+    # Allocation vs optimal allocation with scenario shocks
+    plot_allocation_with_optimal(
+        agg_iter=agg_iter,
+        df_potential=df_potential,
+        markets_used=markets_used,
+        filename=outdir / "art_Allocation_Optimal_Iter.png",
+        N=N,
+        T=T,
+        scenario_events=scenario_events,
+        scenario_name=scenario_name,
+    )
+
+
+
 
     print(f"Saved plots to: {outdir}")
 
@@ -587,7 +822,7 @@ def main():
     profit_stats['max_profit'] = results_profits[agent_cols].max(axis=1)
     profit_stats['std_profit'] = results_profits[agent_cols].std(axis=1)
 
-    # Base diagnostic frame
+     # Base diagnostic frame
     diag = pd.DataFrame({
         'Round': summary_df['Round'],
         'Iteration': summary_df['Iteration'],
@@ -599,22 +834,7 @@ def main():
     diag['max_profit'] = profit_stats['max_profit']
     diag['std_profit'] = profit_stats['std_profit']
 
-    # Add dynamic potential if available
-    if df_potential is not None:
-        key = ['Round', 'Iteration']
-        merged = summary_df[key].merge(
-            df_potential[key + ['Phi', 'Phi_max', 'Phi_ratio']],
-            on=key,
-            how='left'
-        )
-
-        diag['Phi'] = merged['Phi']
-        diag['Phi_max'] = merged['Phi_max']
-        diag['efficiency'] = merged['Phi_ratio']   # DYNAMICZNE efficiency
-    else:
-        diag['efficiency'] = eff_series.reindex(summary_df.index)  # fallback
-
-    # === Per-market counts and average profits ===
+    # === Per-market actual counts and average profits ===
     # markets_used: e.g. [1, 2, 3, 4] or [1,2,3,4,5] (with gov)
     market_data = results_market[agent_cols]
     profit_data = results_profits[agent_cols]
@@ -635,17 +855,123 @@ def main():
         diag[f'n_market_{m}'] = n_m
         diag[f'mean_profit_market_{m}'] = mean_profit_m
 
+    # === Add dynamic potential, optimal allocations and prices if available ===
+    if df_potential is not None:
+        key = ['Round', 'Iteration']
+
+        # Build list of columns to merge from df_potential
+        cols_to_take = ['Phi', 'Phi_max', 'Phi_ratio']
+        # Optional per-market columns (created in simulation.py)
+        for m in sorted(markets_used):
+            for col in (f"opt_n_market_{m}", f"price_market_{m}"):
+                if col in df_potential.columns:
+                    cols_to_take.append(col)
+
+        merged = summary_df[key].merge(
+            df_potential[key + cols_to_take],
+            on=key,
+            how='left'
+        )
+
+        if 'Phi' in merged.columns:
+            diag['Phi'] = merged['Phi']
+        if 'Phi_max' in merged.columns:
+            diag['Phi_max'] = merged['Phi_max']
+        if 'Phi_ratio' in merged.columns:
+            diag['efficiency'] = merged['Phi_ratio']
+
+        # Copy optimal allocations and prices per market, if present
+        for m in sorted(markets_used):
+            opt_col = f"opt_n_market_{m}"
+            price_col = f"price_market_{m}"
+            if opt_col in merged.columns:
+                diag[opt_col] = merged[opt_col]
+            if price_col in merged.columns:
+                diag[price_col] = merged[price_col]
+    else:
+        # Fallback: only static efficiency available
+        diag['efficiency'] = eff_series.reindex(summary_df.index)
+
+    # === Reorder columns: base stats, then per-market blocks: actual, optimal, price, profit ===
+    ordered_cols = ['Round', 'Iteration']
+
+    if 'Phi' in diag.columns:
+        ordered_cols.append('Phi')
+    if 'Phi_max' in diag.columns:
+        ordered_cols.append('Phi_max')
+
+    ordered_cols += [
+        'efficiency',
+        '%changes',
+        'mean_profit',
+        'min_profit',
+        'max_profit',
+        'std_profit',
+    ]
+
+    for m in sorted(markets_used):
+        n_col = f'n_market_{m}'
+        opt_col = f"opt_n_market_{m}"
+        price_col = f"price_market_{m}"
+        mean_p_col = f"mean_profit_market_{m}"
+
+        if n_col in diag.columns:
+            ordered_cols.append(n_col)
+        if opt_col in diag.columns:
+            ordered_cols.append(opt_col)
+        if price_col in diag.columns:
+            ordered_cols.append(price_col)
+        if mean_p_col in diag.columns:
+            ordered_cols.append(mean_p_col)
+
+    diag = diag[ordered_cols]
+
     # Save as CSV (easy to explore in any spreadsheet tool)
     diag_filename = outdir / "diagnostic_episodes.csv"
 
     diag.to_csv(
         diag_filename,
         index=False,
-        sep=';',        
-        decimal=',',  
+        sep=';',
+        decimal=',',
         encoding='utf-8-sig'
     )
     print(f"Saved diagnostic sheet to: {diag_filename}")
+
+
+def run_summary(
+    market: str | None = None,
+    profits: str | None = None,
+    outdir: str | None = None,
+    episode: int | None = None,
+    exp_id: str | None = None,
+):
+    """Programmatic wrapper around the CLI interface.
+
+    It builds a fake sys.argv and calls main(), so that experiments.py
+    can trigger the same logic without shelling out.
+    """
+    import sys
+
+    argv = ["summary.py"]
+    if market is not None:
+        argv += ["--market", market]
+    if profits is not None:
+        argv += ["--profits", profits]
+    if outdir is not None:
+        argv += ["--outdir", outdir]
+    if episode is not None:
+        argv += ["--episode", str(episode)]
+    if exp_id is not None:
+        argv += ["--exp_id", exp_id]
+
+    old_argv = sys.argv
+    try:
+        sys.argv = argv
+        return main()
+    finally:
+        sys.argv = old_argv
+
 
 if __name__ == "__main__":
     main()

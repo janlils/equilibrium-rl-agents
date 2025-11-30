@@ -25,14 +25,33 @@ class Market:
         return eff
 
     def get_prices(self) -> Dict[MarketId, float]:
-        """Compute prices p_i(n_i, state, N) for current (effective) state."""
+        """Compute prices p_i(n_i, N) where:
+        - N counts real participants (RL + external),
+        - technology affects only local congestion (n_eff), not global N."""
+        
+        # Base participant counts (RL + external), without technology multiplier
+        base_counts = {
+            m: self.state[m] + self.external_counts[m]
+            for m in self.spec.markets
+        }
+        N_dyn = sum(base_counts.values())
+
+        # Effective local counts including technology multiplier
         eff_counts = self.get_effective_counts()
-        N_eff = sum(eff_counts.values())
-        prices = {}
+
+        prices: Dict[MarketId, float] = {}
         for m in self.spec.markets:
             n_m_eff = eff_counts[m]
-            prices[m] = self.spec.price_funcs[m](n_m_eff, eff_counts, N_eff) + self.price_add[m]
+
+            # Price function uses local effective count (with tech)
+            # but global N without tech.
+            prices[m] = (
+                self.spec.price_funcs[m](n_m_eff, eff_counts, N_dyn)
+                + self.price_add[m]
+            )
+
         return prices
+
 
     def update(self, old_market: MarketId, new_market: MarketId) -> Dict[MarketId, int]:
         """Move one producer; return new state."""

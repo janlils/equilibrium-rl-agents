@@ -9,23 +9,53 @@ ALPHA = 0.05
 PROFIT_SCALE = 10.0
 
 class Model:
-    def __init__(self, markets: Tuple[MarketId, ...]):
+    def __init__(self, markets: Tuple[MarketId, ...], mode: str = "full"):
         """
         Linear function approximator for Q(s, m).
 
-        Features:
-        - profit_current: profit on the current market (scaled)
-        - profit_m: profit if the agent chose market m (scaled, includes switching cost)
-        - advantage_m: profit_m - profit_current (scaled)
-        - share_m: share of agents on market m (after potential move)
+        Modes:
+        - "full": use profits (current + counterfactual), advantage and market share.
+        - "profit_only": use only profit-based features (no market share).
+        - "count_only": use only market share (number of participants) features.
+
+        In all modes we also add:
         - bias_global: global bias term
         - bias_market_m: one-hot market-specific bias (one coordinate per market)
         """
         self.markets = markets
         self.num_markets = len(markets)
+        self.mode = mode
 
-        # Feature vector length: 5 global features + one bias per market
-        self.dim = 5 + self.num_markets
+        # Decide how many "global" features are used for given mode
+        if mode == "full":
+            # profit_current, profit_m, advantage_m, share_m, bias_global
+            self.global_dim = 5
+            base_names = [
+                "profit_current",
+                "profit_m",
+                "advantage_m",
+                "share_m",
+                "bias_global",
+            ]
+        elif mode == "profit_only":
+            # profit_current, profit_m, advantage_m, bias_global
+            self.global_dim = 4
+            base_names = [
+                "advantage_m",
+                "bias_global",
+            ]
+        elif mode == "count_only":
+            # share_m, bias_global
+            self.global_dim = 2
+            base_names = [
+                "share_m",
+                "bias_global",
+            ]
+        else:
+            raise ValueError(f"Unknown model mode: {mode}")
+
+        # Total dimension = global features + one bias per market
+        self.dim = self.global_dim + self.num_markets
 
         # Initialize parameters
         self.theta = np.random.randn(self.dim) * 0.1 + 1.0
@@ -33,16 +63,8 @@ class Model:
         # Mapping from market id to index in the one-hot part of the feature vector
         self.market_index = {m: i for i, m in enumerate(self.markets)}
 
-        # Human-readable names for the first 5 coefficients
-        self.feature_names = [
-            "profit_current",
-            "profit_m",
-            "advantage_m",
-            "share_m",
-            "bias_global",
-        ]
-        # Extend with per-market biases
-        self.feature_names += [f"bias_market_{m}" for m in self.markets]
+        # Human-readable names for coefficients
+        self.feature_names = base_names + [f"bias_market_{m}" for m in self.markets]
 
     def s2x(
         self,
@@ -93,18 +115,39 @@ class Model:
         # --- Build feature vector ---
         x = np.zeros(self.dim, dtype=float)
 
-        # Global features
-        x[0] = profit_current
-        x[1] = profit_m
-        x[2] = advantage_m
-        x[3] = share_m
-        x[4] = 1.0  # global bias
+        # Fill global part depending on the selected mode
+        if self.mode == "full":
+            # [profit_current, profit_m, advantage_m, share_m, bias_global]
+            x[0] = profit_current
+            x[1] = profit_m
+            x[2] = advantage_m
+            x[3] = share_m
+            x[4] = 1.0  # global bias
+            bias_offset = 5
+
+        elif self.mode == "profit_only":
+            # [profit_current, profit_m, advantage_m, bias_global]
+            x[0] = profit_current
+            x[1] = profit_m
+            x[2] = advantage_m
+            x[3] = 1.0  # global bias
+            bias_offset = 4
+
+        elif self.mode == "count_only":
+            # [share_m, bias_global]
+            x[0] = share_m
+            x[1] = 1.0  # global bias
+            bias_offset = 2
+
+        else:
+            raise ValueError(f"Unknown model mode in s2x: {self.mode}")
 
         # Market-specific bias (one-hot)
-        idx_market = 5 + self.market_index[m]
+        idx_market = bias_offset + self.market_index[m]
         x[idx_market] = 1.0
 
         return x
+
 
     def predict(
         self,
@@ -152,6 +195,7 @@ class Farmer:
         costs: Dict[MarketId, float],
         price_funcs: Dict[MarketId, PriceFn],
         switch_cost: float = 1,
+        model_type: str = "full",
     ):
         self.id = id
         self.markets = markets
@@ -163,7 +207,9 @@ class Farmer:
         # Market before the last move (used for Q(s_t, a_t))
         self.prev_market: MarketId = self.market
 
-        self.model = Model(markets)
+        # Create decision model based on requested type
+        # model_type in {"full", "profit_only", "count_only"}
+        self.model = Model(markets, mode=model_type)
 
         # --- SARSA internal state ---
         self.state_t: Dict[MarketId, int] = {}
@@ -180,6 +226,8 @@ class Farmer:
         self.switched_last_step = False
 
         self.output_multiplier: Dict[MarketId, float] = {int(m): 1.0 for m in markets}
+
+        self.random_policy = False
 
 
     # ---------- helpers ----------
@@ -220,24 +268,27 @@ class Farmer:
     # ---------- main API  ----------
     def choose_action(self, state: Dict[MarketId, int], it: int = 0) -> MarketId:
         """ε-greedy policy: choose next market to move to and store (s_t, a_t)."""
-        # compute Q(s, a) for all markets
-        Qs = Farmer.getQs(
-            self.model,
-            state,
-            self.markets,
-            self.market,
-            self.costs,
-            self.price_funcs,
-            self.switch_cost,
-        )
-        greedy = Farmer.random_argmax(Qs)
-        # agent-specific exploration rate
 
-        eps = float(np.clip(self.eps, 0.0, 1.0))
+        # agent-specific exploration rate
+        if self.random_policy:
+            eps = 1.0
+        else:
+            eps = float(np.clip(self.eps, 0.0, 1.0))
 
         if np.random.rand() < eps:
             a = int(np.random.choice(self.markets))
         else:
+        # compute Q(s, a) for all markets
+            Qs = Farmer.getQs(
+                self.model,
+                state,
+                self.markets,
+                self.market,
+                self.costs,
+                self.price_funcs,
+                self.switch_cost,
+            )
+            greedy = Farmer.random_argmax(Qs)            
             a = greedy
 
         # store current state and chosen action for SARSA update
@@ -312,10 +363,10 @@ class Farmer:
         regret = max(0.0, best_profit - self.profit)
 
         # Map dissatisfaction in [0, +∞) to epsilon in [EPS_MIN, EPS_MAX]
-        EPS_MIN = 0.02
+        EPS_MIN = 0.001
         EPS_MAX = 0.2
 
-        tau = 5.0
+        tau = 1.0
 
         if regret > tau:
             self.eps = EPS_MAX
