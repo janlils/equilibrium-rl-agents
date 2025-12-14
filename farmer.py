@@ -39,16 +39,16 @@ class Model:
             ]
         elif mode == "profit_only":
             # profit_current, profit_m, advantage_m, bias_global
-            self.global_dim = 4
+            self.global_dim = 2
             base_names = [
                 "advantage_m",
                 "bias_global",
             ]
         elif mode == "count_only":
             # share_m, bias_global
-            self.global_dim = 2
+            self.global_dim = 1
             base_names = [
-                "share_m",
+                # "share_m",
                 "bias_global",
             ]
         else:
@@ -127,17 +127,15 @@ class Model:
 
         elif self.mode == "profit_only":
             # [profit_current, profit_m, advantage_m, bias_global]
-            x[0] = profit_current
-            x[1] = profit_m
-            x[2] = advantage_m
-            x[3] = 1.0  # global bias
-            bias_offset = 4
+            x[0] = advantage_m
+            x[1] = 1.0  # global bias
+            bias_offset = 2
 
         elif self.mode == "count_only":
             # [share_m, bias_global]
-            x[0] = share_m
-            x[1] = 1.0  # global bias
-            bias_offset = 2
+            # x[0] = share_m
+            x[0] = 1.0  # global bias
+            bias_offset = 1
 
         else:
             raise ValueError(f"Unknown model mode in s2x: {self.mode}")
