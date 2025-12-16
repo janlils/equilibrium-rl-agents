@@ -21,7 +21,7 @@ from summary import run_summary
 DEFAULT_PARAMS: Dict[str, Any] = {
     "N": 100,
     "T": 1000,
-    "episodes": 10,
+    "episodes": 2,
     "add_gov": False,
     "switch_cost": 0.0,
     "seed": 1411,
@@ -34,100 +34,47 @@ DEFAULT_PARAMS: Dict[str, Any] = {
 # Names roughly mirror the one-off examples from simulation.py __main__.
 
 SCENARIOS: Dict[str, Dict[str, Any]] = {
-    "baseline": {
+    "4m_random": {
         "scenario": [],
         "params": {
             "add_gov": False,
+            "random_policy": True,            
         },
     },
 
-    "random_agents_gov": {
+    "4m_Q1": {
+        "scenario": [],
+        "params": {
+            "add_gov": False,
+            "model_type": "Q1",
+        },
+    },
+
+    "4m_Q2": {
+        "scenario": [],
+        "params": {
+            "add_gov": False,
+            "model_type": "Q2",
+        },
+    },
+
+    "5m_Q1": {
         "scenario": [],
         "params": {
             "add_gov": True,
-            "random_policy": True,
+            "model_type": "Q1",
         },
     },
 
-    "gov_only": {
+    "5m_Q2": {
         "scenario": [],
         "params": {
             "add_gov": True,
+            "model_type": "Q2",
         },
     },
 
-    "price_bump_m2_it200": {
-        "scenario": [
-            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
-        ],
-        "params": {
-            "add_gov": True,
-        },
-    },
-
-    "entrants_m1_it300": {
-        "scenario": [
-            {"when": {"iter": 300}, "entrants": {1: 15}},
-        ],
-        "params": {
-            "add_gov": True,
-        },
-    },
-
-    "inflation_m3_from400": {
-        "scenario": [
-            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.01}},
-        ],
-        "params": {
-            "add_gov": True,
-        },    
-    },
-
-    "switch_cost_from500": {
-        "scenario": [
-            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-        ],
-        "params": {
-            "add_gov": True,
-        },
-    },
-
-
-    "cost_shock_m4_it600": {
-        "scenario": [
-            {"when": {"iter": 600}, "cost_shock": {4: +4}},
-        ],
-        "params": {
-            "add_gov": True,
-        },
-    },
-
-    "tech_m3_from700": {
-        "scenario": [
-            {"when": {"from_iter": 700}, "technology": {3: 2.0}},
-        ],
-        "params": {
-            "add_gov": True,
-        },
-    },
-
-    "all_shocks_full": {
-        "scenario": [
-            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
-            {"when": {"iter": 300}, "entrants": {1: 15}},
-            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
-            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-            {"when": {"iter": 600}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 700}, "technology": {3: 1.5}},            
-        ],
-        "params": {
-            "add_gov": True,
-            "random_policy": False,
-            "model_type": "full",
-        },
-    },
-
-    "all_shocks_profit": {
+    "5m_Q1_shocks": {
         "scenario": [
             {"when": {"iter": 200}, "price_bump": {2: +5.0}},
             {"when": {"iter": 300}, "entrants": {1: 15}},
@@ -139,25 +86,41 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
         "params": {
             "add_gov": True,
             "random_policy": False,
-            "model_type": "profit_only",            
+            "model_type": "Q1",            
         },
     },
 
-    "all_shocks_count": {
+    "5m_Q2_shocks": {
         "scenario": [
             {"when": {"iter": 200}, "price_bump": {2: +5.0}},
             {"when": {"iter": 300}, "entrants": {1: 15}},
             {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
             {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
             {"when": {"iter": 600}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 700}, "technology": {3: 1.5}},    
+            {"when": {"from_iter": 700}, "technology": {3: 1.5}},        
         ],
         "params": {
             "add_gov": True,
             "random_policy": False,
-            "model_type": "count_only",            
+            "model_type": "Q2",            
         },
-    },    
+    },
+
+    "5m_Q3_shocks": {
+        "scenario": [
+            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
+            {"when": {"iter": 300}, "entrants": {1: 15}},
+            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
+            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
+            {"when": {"iter": 600}, "cost_shock": {4: +4}},
+            {"when": {"from_iter": 700}, "technology": {3: 1.5}},        
+        ],
+        "params": {
+            "add_gov": True,
+            "random_policy": False,
+            "model_type": "full",            
+        },
+    },
 }
 
 

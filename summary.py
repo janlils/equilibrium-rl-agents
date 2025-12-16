@@ -37,6 +37,9 @@ plt.rcParams.update({
 colors_hex = [ '#24325F', '#82491E', '#B7E4F9', '#E89242','#FB6467', '#69C8EC']
 cm = ListedColormap(colors_hex)
 
+EFFICIENCY_THRESHOLD = 0.99
+EQUILIBRIUM_WINDOW = 5
+
 
 def load_pickle(path: str):
     with open(path, "rb") as f:
@@ -228,6 +231,110 @@ def compute_agent_level_stats(results_market: pd.DataFrame, results_profits: pd.
 
     return agent_avg_profits, agent_avg_changes
 
+
+def count_adjustment_iterations(
+    efficiencies: np.ndarray,
+    threshold: float = EFFICIENCY_THRESHOLD,
+    window: int = EQUILIBRIUM_WINDOW,
+) -> int:
+    """
+    Count how many iterations within a single episode are spent "adjusting"
+    (outside equilibrium). An episode enters equilibrium once it records
+    `window` consecutive efficiency values above the threshold and leaves it
+    after `window` consecutive values below the threshold.
+    """
+    values = np.asarray(efficiencies, dtype=float)
+    values = values[~np.isnan(values)]
+    n = len(values)
+    if n == 0:
+        return 0
+
+    efficient = values > threshold
+    eq_mask = np.zeros(n, dtype=bool)
+    out_mask = np.zeros(n, dtype=bool)
+
+    consec_eff = 0
+    consec_ineff = 0
+    for i, is_eff in enumerate(efficient):
+        if is_eff:
+            consec_eff += 1
+        else:
+            consec_eff = 0
+        if consec_eff >= window:
+            eq_mask[i] = True
+
+        if not is_eff:
+            consec_ineff += 1
+        else:
+            consec_ineff = 0
+        if consec_ineff >= window:
+            out_mask[i] = True
+
+    adjusting = 0
+    in_equilibrium = False
+    adjusting_active = True  # start outside equilibrium until we enter it once
+
+    for i in range(n):
+        if eq_mask[i]:
+            in_equilibrium = True
+            adjusting_active = False
+
+        if in_equilibrium and out_mask[i]:
+            in_equilibrium = False
+            adjusting_active = True
+
+        if adjusting_active:
+            adjusting += 1
+
+    return adjusting
+
+
+def compute_episode_efficiency_stats(
+    results_market: pd.DataFrame,
+    eff_series: pd.Series,
+    threshold: float = EFFICIENCY_THRESHOLD,
+    window: int = EQUILIBRIUM_WINDOW,
+) -> pd.DataFrame:
+    """
+    Build a per-episode table with:
+      - fraction of iterations above the efficiency threshold,
+      - number of iterations spent adjusting (outside equilibrium).
+    """
+    df = pd.DataFrame({
+        'Round': results_market['Round'].values,
+        'efficiency': eff_series.values,
+    })
+
+    rows = []
+    for rnd, grp in df.groupby('Round'):
+        eff_vals = grp['efficiency'].dropna().to_numpy(dtype=float)
+        total_iters = len(eff_vals)
+
+        if total_iters == 0:
+            rows.append({
+                'Round': rnd,
+                'iterations_total': 0,
+                'efficient_iterations': 0,
+                'efficient_pct': np.nan,
+                'adjustment_iterations': 0,
+            })
+            continue
+
+        efficient_mask = eff_vals > threshold
+        efficient_iters = int(efficient_mask.sum())
+        efficient_pct = (efficient_iters / total_iters) * 100.0
+        adjustment_iters = count_adjustment_iterations(eff_vals, threshold, window)
+
+        rows.append({
+            'Round': rnd,
+            'iterations_total': total_iters,
+            'efficient_iterations': efficient_iters,
+            'efficient_pct': efficient_pct,
+            'adjustment_iterations': adjustment_iters,
+        })
+
+    return pd.DataFrame(rows).sort_values('Round').reset_index(drop=True)
+
 def plot_allocation_with_optimal(
     agg_iter: pd.DataFrame,
     df_potential: Optional[pd.DataFrame],
@@ -392,6 +499,8 @@ def plot_allocation_with_optimal(
                 fontsize=8,
                 alpha=0.8,
             )
+
+    ax.set_ylim(0, 50)
 
     ax.set_title(
         f"Average allocation per market by iteration\n"
@@ -589,7 +698,7 @@ def plot_efficiency_hist_last_iter(eff_series: pd.Series,
     # Add efficiency labels above each bar (rounded)
     for idx, bar in enumerate(bars):
         height = bar.get_height()
-        eff = round(values[idx], 2)      # keep your label style
+        eff = round(values[idx], 4)      # keep your label style
         plt.text(
             bar.get_x() + bar.get_width() / 2,
             height + 0.02,
@@ -806,12 +915,18 @@ def main():
         scenario_name=scenario_name,
     )
 
+    episode_stats = compute_episode_efficiency_stats(
+        results_market,
+        eff_series,
+        threshold=EFFICIENCY_THRESHOLD,
+        window=EQUILIBRIUM_WINDOW,
+    )
 
 
 
     print(f"Saved plots to: {outdir}")
 
-   # === Diagnostic sheet: one row per (Round, Iteration) ===
+    # === Diagnostic sheet: one row per (Round, Iteration) ===
 
     agent_cols = [c for c in results_profits.columns if isinstance(c, int)]
 
@@ -822,7 +937,7 @@ def main():
     profit_stats['max_profit'] = results_profits[agent_cols].max(axis=1)
     profit_stats['std_profit'] = results_profits[agent_cols].std(axis=1)
 
-     # Base diagnostic frame
+    # Base diagnostic frame
     diag = pd.DataFrame({
         'Round': summary_df['Round'],
         'Iteration': summary_df['Iteration'],
@@ -937,6 +1052,25 @@ def main():
         encoding='utf-8-sig'
     )
     print(f"Saved diagnostic sheet to: {diag_filename}")
+
+    episode_stats_filename = outdir / "episode_efficiency_stats.csv"
+    episode_stats.to_csv(
+        episode_stats_filename,
+        index=False,
+        sep=';',
+        decimal=',',
+        encoding='utf-8-sig'
+    )
+    print(f"Saved per-episode efficiency stats to: {episode_stats_filename}")
+
+    if not episode_stats.empty:
+        avg_eff_pct = episode_stats['efficient_pct'].mean(skipna=True)
+        avg_adj_iters = episode_stats['adjustment_iterations'].mean(skipna=True)
+        print(
+            f"Average share of efficient iterations: "
+            f"{avg_eff_pct:.2f}% | "
+            f"Average adjustment time: {avg_adj_iters:.1f} iterations"
+        )
 
 
 def run_summary(

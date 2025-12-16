@@ -14,6 +14,7 @@ from optimal_allocation import potential, dp_potential_max
 N = 100              # number of agents
 EPISODES = 100       # number of independent runs (experiments)
 ITERATIONS = 1000    # iterations per run
+EFFICIENT_THRESHOLD = 0.99
 
 def run_experiment(
     N: int,
@@ -55,10 +56,14 @@ def run_experiment(
     for ep in range(episodes):          # episodes
         print(f"=== Episode {ep + 1}/{episodes} ===")
 
+        markets_ordered = sorted(spec.markets)
+        public_price_board = {m: {} for m in markets_ordered}         
+
         farmers = [
-            Farmer(i, spec.markets, spec.costs, spec.price_funcs, switch_cost=switch_cost, model_type=model_type,)
+            Farmer(i, spec.markets, spec.costs, switch_cost=switch_cost, model_type=model_type,)
             for i in range(N)
         ]
+        efficient_counter = 0
 
         init = {m: 0 for m in spec.markets}
         for f in farmers:
@@ -81,20 +86,23 @@ def run_experiment(
             random.shuffle(farmers)
 
             # Asynchronous decisions 
-            state = market.get_state()
+            state = market.get_effective_counts()
             for f in farmers:
+                f.public_price_board = public_price_board
                 f.choose_action(state, it)
                 old_m, new_m = f.action()
                 f.switched_last_step = (old_m != new_m)
-                state = market.update(old_m, new_m)
+                market.update(old_m, new_m)
+                state = market.get_effective_counts()
 
             # End-of-round accounting
             state  = market.get_state()
             prices = market.get_prices()
 
+            for f in farmers:
+                f.last_prices = dict(prices)
 
             # --- Theoretical potential for this iteration ---
-            markets_ordered = sorted(spec.markets)
 
             # Current allocation of agents (RL outcome)
             alloc = [state[m] for m in markets_ordered]
@@ -177,6 +185,8 @@ def run_experiment(
             optimal_alloc_row = alloc_max
             price_row = [prices[m] for m in markets_ordered]
 
+            efficient_counter += (1 if phi_ratio >= EFFICIENT_THRESHOLD else 0)
+
             # Save potential metrics + allocations + prices
             results_potential.append(
                 [ep, it + 1, phi, phi_max, phi_ratio]
@@ -185,12 +195,17 @@ def run_experiment(
                 + price_row
             )
 
+            state_eff = market.get_effective_counts()
+            for m in markets_ordered:
+                n_eff = int(state_eff[m])
+                public_price_board[m][n_eff] = float(prices[m])
 
             for f in farmers:
+                f.public_price_board = public_price_board
                 p = f.calculate_profits(prices, state, it)
 
                 # LEARNING
-                f.update(prices, state, it)
+                f.update(state_eff, it)
                 f.update_epsilon(prices)
                 
                 idx = f.id + 2
@@ -205,6 +220,9 @@ def run_experiment(
         print(f"\nEpisode {ep}: average coefficients:")
         for name, w in zip(farmers[0].model.feature_names, avg_theta):
             print(f"  {name:15s} = {w: .4f}")
+
+        eff_ratio = efficient_counter / T
+        print(f"Episode {ep}: efficient iterations: {efficient_counter}/{T} ({eff_ratio:.2%})")
 
 
 
@@ -259,75 +277,3 @@ if __name__ == "__main__":
         N=100, T=1000, episodes=10,
         add_gov=False, switch_cost=0
     )
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0
-    # )
-
-    # # One-off positive price bump on market 2 at iteration 200
-    # scenario_1 = [
-    #     {"when": {"iter": 200}, "price_bump": {2: +3.0}},
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_1
-    # )
-
-    # # Influx of 15 exogenous participants on market 1 in iteration 300
-    # scenario_2 = [
-    #     {"when": {"iter": 300}, "entrants": {1: 15}},
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_2
-    # )    
-
-    # # Technology shock: from it>=400 each agent on market 3 effectively counts as 2
-    # scenario_3 = [
-    #     {"when": {"from_iter": 400}, "technology": {3: 2.0}},
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_3
-    # )    
-
-    # # Increase transaction (switching) cost from it>=500
-    # scenario_4 = [
-    #     {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_4
-    # )    
-
-    # # Cost shock: from it=600 on market 4 (+2 absolute)
-    # scenario_5 = [
-    #     {"when": {"iter": 600}, "cost_shock": {4: +2}},
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_5
-    # )    
-
-    # # Cost inflation – linear on market 1 from it=700 at +1% per iteration
-    # scenario_6 = [
-    #     {"when": {"from_iter": 700}, "inflation": {"market": 1, "start": 700, "rate": 0.01}}
-    # ]
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_6
-    # )    
-
-    # scenario_7 = scenario_1 + scenario_2 + scenario_3 + scenario_4 + scenario_5 + scenario_6
-
-    # run_experiment(
-    #     N=100, T=1000, episodes=10,
-    #     add_gov=True, switch_cost=0, scenario=scenario_7
-    # )
