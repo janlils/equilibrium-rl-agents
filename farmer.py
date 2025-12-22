@@ -55,7 +55,7 @@ class Model:
         self.dim = self.global_dim + self.num_markets
 
         # Initialize parameters
-        self.theta = np.random.randn(self.dim) * 0.1 + 1.0
+        self.theta = np.random.randn(self.dim) * 5
 
         # Mapping from market id to index in the one-hot part of the feature vector
         self.market_index = {m: i for i, m in enumerate(self.markets)}
@@ -347,7 +347,7 @@ class Farmer:
     def update_epsilon(self, prices: Dict[MarketId, float]):
         """
         Update exploration rate epsilon based on regret:
-        if current profit is much worse than the best achievable profit
+        if current profit is worse than the best achievable profit
         on other markets, increase epsilon to encourage exploration.
         """
         # Compute hypothetical profit on each market

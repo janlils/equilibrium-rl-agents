@@ -12,16 +12,19 @@ for each scenario, with consistent experiment IDs and metadata.
 from pathlib import Path
 import json
 from typing import Dict, Any, List
+import pandas as pd
 
 from simulation import run_experiment
 from summary import run_summary
+
+EXPERIMENT_SUMMARIES: List[Dict[str, Any]] = []
 
 
 # Default parameters shared by all scenarios unless overridden
 DEFAULT_PARAMS: Dict[str, Any] = {
     "N": 100,
     "T": 1000,
-    "episodes": 2,
+    "episodes": 100,
     "add_gov": False,
     "switch_cost": 0.0,
     "seed": 1411,
@@ -31,8 +34,6 @@ DEFAULT_PARAMS: Dict[str, Any] = {
 
 
 # Scenarios in the format expected by ShockEngine (see scenario.py).
-# Names roughly mirror the one-off examples from simulation.py __main__.
-
 SCENARIOS: Dict[str, Dict[str, Any]] = {
     "4m_random": {
         "scenario": [],
@@ -76,12 +77,12 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
 
     "5m_Q1_shocks": {
         "scenario": [
-            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
-            {"when": {"iter": 300}, "entrants": {1: 15}},
-            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
-            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-            {"when": {"iter": 600}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 700}, "technology": {3: 1.5}},        
+            {"when": {"iter": 400}, "price_bump": {2: +5.0}},
+            {"when": {"iter": 500}, "entrants": {1: 15}},
+            {"when": {"from_iter": 600}, "inflation": {"market": 3, "start": 600, "rate": 0.002}},            
+            {"when": {"from_iter": 700}, "transaction_cost": {"set": 2.0}},
+            {"when": {"iter": 800}, "cost_shock": {4: +4}},
+            {"when": {"from_iter": 900}, "technology": {3: 1.5}},        
         ],
         "params": {
             "add_gov": True,
@@ -92,12 +93,12 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
 
     "5m_Q2_shocks": {
         "scenario": [
-            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
-            {"when": {"iter": 300}, "entrants": {1: 15}},
-            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
-            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-            {"when": {"iter": 600}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 700}, "technology": {3: 1.5}},        
+            {"when": {"iter": 400}, "price_bump": {2: +5.0}},
+            {"when": {"iter": 500}, "entrants": {1: 15}},
+            {"when": {"from_iter": 600}, "inflation": {"market": 3, "start": 600, "rate": 0.002}},            
+            {"when": {"from_iter": 700}, "transaction_cost": {"set": 2.0}},
+            {"when": {"iter": 800}, "cost_shock": {4: +4}},
+            {"when": {"from_iter": 900}, "technology": {3: 1.5}},           
         ],
         "params": {
             "add_gov": True,
@@ -108,12 +109,12 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
 
     "5m_Q3_shocks": {
         "scenario": [
-            {"when": {"iter": 200}, "price_bump": {2: +5.0}},
-            {"when": {"iter": 300}, "entrants": {1: 15}},
-            {"when": {"from_iter": 400}, "inflation": {"market": 3, "start": 400, "rate": 0.002}},            
-            {"when": {"from_iter": 500}, "transaction_cost": {"set": 2.0}},
-            {"when": {"iter": 600}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 700}, "technology": {3: 1.5}},        
+            {"when": {"iter": 400}, "price_bump": {2: +5.0}},
+            {"when": {"iter": 500}, "entrants": {1: 15}},
+            {"when": {"from_iter": 600}, "inflation": {"market": 3, "start": 600, "rate": 0.002}},            
+            {"when": {"from_iter": 700}, "transaction_cost": {"set": 2.0}},
+            {"when": {"iter": 800}, "cost_shock": {4: +4}},
+            {"when": {"from_iter": 900}, "technology": {3: 1.5}},           
         ],
         "params": {
             "add_gov": True,
@@ -130,6 +131,70 @@ def _merge_params(custom: Dict[str, Any] | None) -> Dict[str, Any]:
     if custom:
         params.update(custom)
     return params
+
+
+def _policy_label(params: Dict[str, Any]) -> str:
+    """Return human-readable label for the decision policy."""
+    return "random" if params.get("random_policy") else params.get("model_type", "full")
+
+
+def _collect_efficiency_stats(run_dir: Path) -> tuple[float | None, float | None]:
+    """Read per-episode stats from summary output and average them."""
+    stats_path = run_dir / "plots" / "episode_efficiency_stats.csv"
+    if not stats_path.exists():
+        return None, None
+
+    try:
+        df = pd.read_csv(stats_path, sep=';', decimal=',')
+    except Exception as exc:
+        print(f"Warning: failed to read {stats_path.name}: {exc}")
+        return None, None
+
+    if df.empty:
+        return None, None
+
+    eff_pct = float(df['efficient_pct'].mean())
+    adjust_iters = float(df['adjustment_iterations'].mean())
+    return eff_pct, adjust_iters
+
+
+def _record_experiment_summary(
+    name: str,
+    params: Dict[str, Any],
+    scenario: List[dict],
+    run_dir: Path,
+) -> None:
+    """Append a row describing this experiment for the final table."""
+    eff_pct, adjust_iters = _collect_efficiency_stats(run_dir)
+    EXPERIMENT_SUMMARIES.append({
+        "scenario": name,
+        "gov_market": bool(params.get("add_gov")),
+        "policy": _policy_label(params),
+        "has_shocks": bool(scenario),
+        "efficient_pct": eff_pct,
+        "adjustment_iters": adjust_iters,
+        "run_dir": str(run_dir),
+    })
+
+
+def _write_experiment_summary_table() -> None:
+    """Persist the consolidated summary table after all runs."""
+    if not EXPERIMENT_SUMMARIES:
+        return
+
+    df = pd.DataFrame(EXPERIMENT_SUMMARIES)
+    df.insert(0, "experiment_no", range(1, len(df) + 1))
+
+    # Improve readability of boolean columns
+    bool_map = {True: "yes", False: "no"}
+    df['gov_market'] = df['gov_market'].map(bool_map)
+    df['has_shocks'] = df['has_shocks'].map(bool_map)
+
+    out_dir = Path("results")
+    out_dir.mkdir(exist_ok=True)
+    out_path = out_dir / "experiments_summary.csv"
+    df.to_csv(out_path, index=False, sep=';', decimal=',', encoding='utf-8-sig')
+    print(f"Saved experiment summary table to: {out_path}")
 
 
 def run_scenario(name: str) -> Path:
@@ -175,6 +240,7 @@ def run_scenario(name: str) -> Path:
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
     run_summary(exp_id=exp_id, outdir=str(plots_dir))
+    _record_experiment_summary(name, params, scenario, run_dir)
 
     return run_dir
 
@@ -185,6 +251,7 @@ def run_all(selected: List[str] | None = None) -> None:
     for name in names:
         print(f"\n========== Running scenario: {name} ==========")
         run_scenario(name)
+    _write_experiment_summary_table()
 
 
 if __name__ == "__main__":

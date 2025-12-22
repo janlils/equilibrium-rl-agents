@@ -317,6 +317,7 @@ def compute_episode_efficiency_stats(
                 'efficient_iterations': 0,
                 'efficient_pct': np.nan,
                 'adjustment_iterations': 0,
+                'adjustment_pct': np.nan,
             })
             continue
 
@@ -324,6 +325,7 @@ def compute_episode_efficiency_stats(
         efficient_iters = int(efficient_mask.sum())
         efficient_pct = (efficient_iters / total_iters) * 100.0
         adjustment_iters = count_adjustment_iterations(eff_vals, threshold, window)
+        adjustment_pct = (adjustment_iters / total_iters) * 100.0 if total_iters > 0 else np.nan
 
         rows.append({
             'Round': rnd,
@@ -331,6 +333,7 @@ def compute_episode_efficiency_stats(
             'efficient_iterations': efficient_iters,
             'efficient_pct': efficient_pct,
             'adjustment_iterations': adjustment_iters,
+            'adjustment_pct': adjustment_pct,
         })
 
     return pd.DataFrame(rows).sort_values('Round').reset_index(drop=True)
@@ -474,12 +477,14 @@ def plot_allocation_with_optimal(
 
     # Draw vertical lines and labels for shocks
     if shock_marks:
+        ax.set_ylim(0, 50)
         # Get current limits based on data before adding text
         ymin, ymax = ax.get_ylim()
         y_range = ymax - ymin if ymax > ymin else 1.0
 
-        # Place labels slightly above the bottom of the plot area
-        label_y = ymin + 0.02 * y_range
+        # Place labels exactly at the top boundary of the plot (ymax)
+        label_y = ymax
+        x_offset = max(0.005 * (ax.get_xlim()[1] - ax.get_xlim()[0]), 0.2)
 
         for it, label in shock_marks:
             ax.axvline(
@@ -490,11 +495,11 @@ def plot_allocation_with_optimal(
                 alpha=0.7,
             )
             ax.text(
-                it,
+                it - x_offset,
                 label_y,
                 label,
                 rotation=90,
-                va="bottom",
+                va="top",
                 ha="right",
                 fontsize=8,
                 alpha=0.8,
@@ -509,7 +514,7 @@ def plot_allocation_with_optimal(
     ax.set_ylabel("Number of agents")
     ax.set_xlabel("Iteration")
 
-    ax.legend(loc="upper right", fontsize=8)
+    ax.legend(loc="upper left", fontsize=8)
     plt.tight_layout()
     plt.savefig(filename, bbox_inches="tight", dpi=300)
     plt.close()
@@ -546,6 +551,7 @@ def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
             line.set_zorder(0)
     ax.set_ylabel('Profit')
     ax.set_xlabel('Iteration')
+    ax.set_ylim(-10.0, 10.0)
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -559,6 +565,30 @@ def plot_decision_changes(agg_iter: pd.DataFrame, filename: str, N, T):
     ax.set_ylabel('Stability (fraction of agents not changing market)')
     ax.set_xlabel('Iteration')
     ax.set_ylim(0.0, 1.0)
+
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
+def plot_theta_iter(df_theta: pd.DataFrame, filename: str, N: int, T: int):
+    """
+    Plot average Q-parameter values by iteration.
+    """
+    param_cols = [c for c in df_theta.columns if c not in ('Round', 'Iteration')]
+    if not param_cols:
+        return
+
+    agg = (
+        df_theta[['Iteration'] + param_cols]
+        .groupby('Iteration')
+        .mean(numeric_only=True)
+    )
+
+    ax = agg.plot(
+        title=f'Average Q-parameters by iteration \n (n_Agents = {N}, n_Episodes = {T})',
+        grid=True
+    )
+    ax.set_ylabel('Average parameter value')
+    ax.set_xlabel('Iteration')
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -800,6 +830,18 @@ def main():
     else:
         print("Warning: results_potential*.pickle not found. Falling back to static potential.")
 
+    theta_path = Path(args.market).with_name(
+        Path(args.market).name.replace("results_market", "results_theta")
+    )
+    df_theta = None
+    if theta_path.exists():
+        df_theta = load_pickle(theta_path)
+        if not isinstance(df_theta, pd.DataFrame):
+            df_theta = pd.DataFrame(df_theta)
+        print(f"Loaded Q-parameters from {theta_path.name}")
+    else:
+        print("Warning: results_theta*.pickle not found. Skipping Q-parameter plot.")
+
     # Try to load scenario metadata (scenario events and name) from config.json
     scenario_events: List[Dict[str, Any]] = []
     scenario_name: Optional[str] = None
@@ -841,6 +883,8 @@ def main():
         # Filter both market and profits data to the selected episode
         results_market = results_market[results_market['Round'] == ep].copy()
         results_profits = results_profits[results_profits['Round'] == ep].copy()
+        if df_theta is not None:
+            df_theta = df_theta[df_theta['Round'] == ep].copy()
 
         print(f"Running summary for a single episode: Round = {ep}")
     else:
@@ -914,6 +958,8 @@ def main():
         scenario_events=scenario_events,
         scenario_name=scenario_name,
     )
+    if df_theta is not None and not df_theta.empty:
+        plot_theta_iter(df_theta, outdir / 'art_Q_Params_Iter.png', N, T)
 
     episode_stats = compute_episode_efficiency_stats(
         results_market,
@@ -1064,12 +1110,16 @@ def main():
     print(f"Saved per-episode efficiency stats to: {episode_stats_filename}")
 
     if not episode_stats.empty:
+        print("\nPer-episode efficiency stats:")
+        print(episode_stats.to_string(index=False))
         avg_eff_pct = episode_stats['efficient_pct'].mean(skipna=True)
         avg_adj_iters = episode_stats['adjustment_iterations'].mean(skipna=True)
+        avg_adj_pct = episode_stats['adjustment_pct'].mean(skipna=True)
         print(
             f"Average share of efficient iterations: "
             f"{avg_eff_pct:.2f}% | "
-            f"Average adjustment time: {avg_adj_iters:.1f} iterations"
+            f"Average adjustment time: {avg_adj_iters:.1f} iterations "
+            f"({avg_adj_pct:.2f}% of iterations)"
         )
 
 

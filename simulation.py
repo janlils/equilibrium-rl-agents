@@ -52,6 +52,8 @@ def run_experiment(
     )
 
     results_market, results_profits, results_potential = [], [], []
+    results_theta: list[list[float]] = []
+    theta_feature_names: list[str] | None = None
 
     for ep in range(episodes):          # episodes
         print(f"=== Episode {ep + 1}/{episodes} ===")
@@ -63,6 +65,8 @@ def run_experiment(
             Farmer(i, spec.markets, spec.costs, switch_cost=switch_cost, model_type=model_type,)
             for i in range(N)
         ]
+        if theta_feature_names is None:
+            theta_feature_names = list(farmers[0].model.feature_names)
         efficient_counter = 0
 
         init = {m: 0 for m in spec.markets}
@@ -214,6 +218,9 @@ def run_experiment(
 
             results_market.append(markets_row)
             results_profits.append(profits_row)
+            avg_theta_iter = np.mean([f.model.theta for f in farmers], axis=0)
+            theta_row = [ep, it + 1] + avg_theta_iter.tolist()
+            results_theta.append(theta_row)
 
         # Average coefficients across all farmers
         avg_theta = np.mean([f.model.theta for f in farmers], axis=0)
@@ -233,6 +240,10 @@ def run_experiment(
 
     df_market = pd.DataFrame(results_market, columns=cols)
     df_profits = pd.DataFrame(results_profits, columns=cols)
+    if theta_feature_names is None:
+        theta_feature_names = []
+    cols_theta = ['Round', 'Iteration'] + theta_feature_names
+    df_theta = pd.DataFrame(results_theta, columns=cols_theta)
 
     # - market IDs as int
     for c in range(N):
@@ -253,6 +264,8 @@ def run_experiment(
 
     with open(run_dir / f"results_profits{suffix}.pickle", "wb") as f:
         pickle.dump(df_profits, f)
+    with open(run_dir / f"results_theta{suffix}.pickle", "wb") as f:
+        pickle.dump(df_theta, f)
 
     markets_ordered = sorted(spec.markets)
 
