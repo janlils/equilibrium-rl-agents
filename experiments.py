@@ -106,22 +106,6 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "model_type": "Q2",            
         },
     },
-
-    "5m_Q3_shocks": {
-        "scenario": [
-            {"when": {"iter": 400}, "price_bump": {2: +5.0}},
-            {"when": {"iter": 500}, "entrants": {1: 15}},
-            {"when": {"from_iter": 600}, "inflation": {"market": 3, "start": 600, "rate": 0.002}},            
-            {"when": {"from_iter": 700}, "transaction_cost": {"set": 2.0}},
-            {"when": {"iter": 800}, "cost_shock": {4: +4}},
-            {"when": {"from_iter": 900}, "technology": {3: 1.5}},           
-        ],
-        "params": {
-            "add_gov": True,
-            "random_policy": False,
-            "model_type": "full",            
-        },
-    },
 }
 
 
