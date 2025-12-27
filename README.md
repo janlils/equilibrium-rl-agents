@@ -1,6 +1,6 @@
 # sarsa-farmers
 
-Agent-based SARSA simulation for agricultural market selection with linear value approximation. Farmers (agents) learn which market to join or stay on given price-feedback, costs, switching frictions, and exogenous shocks. The simulator tracks actual vs. optimal allocations and produces visual summaries and aggregate statistics.
+Agent-based SARSA simulation for market selection with linear value approximation. Agents learn which market to join or stay on given price-feedback, costs, switching frictions, and exogenous shocks. The simulator tracks actual vs. optimal allocations and produces visual summaries and aggregate statistics.
 
 ## Table of Contents
 1. [Architecture](#architecture)
@@ -129,4 +129,4 @@ By default, Excel is saved as `results/<name>.xlsx`; adjust `--out` as needed.
 
 ## License
 
-This codebase is intended for research/educational purposes. No formal license is attached; contact the repository owner if you plan to reuse the code in other contexts.*** End Patch
+This codebase is intended for research/educational purposes. No formal license is attached; contact the repository owner if you plan to reuse the code in other contexts.
