@@ -1,125 +1,132 @@
 # sarsa-farmers
 
-Symulacja rynku rolnego oparta o wieloagentowe uczenie SARSA z funkcją wartości aproksymowaną liniowo. Projekt pozwala badać, w jaki sposób agenci (rolnicy) uczą się wybierać rynek zbytu w odpowiedzi na ceny, koszty i ex-post szoki, a także porównywać ich zachowanie z rozkładem optymalnym.
+Agent-based SARSA simulation for agricultural market selection with linear value approximation. Farmers (agents) learn which market to join or stay on given price-feedback, costs, switching frictions, and exogenous shocks. The simulator tracks actual vs. optimal allocations and produces visual summaries and aggregate statistics.
 
-## Spis treści
-1. [Architektura](#architektura)
-2. [Instalacja](#instalacja)
-3. [Uruchamianie symulacji](#uruchamianie-symulacji)
-4. [Scenariusze eksperymentalne](#scenariusze-eksperymentalne)
-5. [Analiza wyników i wykresy](#analiza-wyników-i-wykresy)
-6. [Eksport zbiorczy do Excela](#eksport-zbiorczy-do-excela)
-7. [Struktura katalogów](#struktura-katalogów)
+## Table of Contents
+1. [Architecture](#architecture)
+2. [Installation](#installation)
+3. [Running Simulations](#running-simulations)
+4. [Batch Experiments](#batch-experiments)
+5. [Analysis & Plots](#analysis--plots)
+6. [Excel Export](#excel-export)
+7. [Directory Structure](#directory-structure)
 
-## Architektura
+## Architecture
 
-- `simulation.py` — główny silnik symulacji, tworzy agentów (`farmer.py`), rynki (`market.py`) oraz zapisuje wyniki do plików `.pickle`.
-- `farmer.py` — definicja strategii agentów z liniową aproksymacją Q i opcjonalnym trybem losowym.
-- `market.py` + `config.py` — definicja rynków, funkcji cenowych i kosztów, w tym możliwość dodania rynku „rządowego”.
-- `scenario.py` — generator szoków makro (np. zmiana ceny, inflacja, zwiększenie liczby uczestników).
-- `optimal_allocation.py` — dynamiczne programowanie do obliczenia maksymalnego potencjału (ref. optimum).
-- `summary.py` — generacja wykresów i arkuszy diagnostycznych z wygenerowanych wyników.
-- `experiments.py` — lista gotowych scenariuszy oraz narzędzie do uruchamiania wielu eksperymentów.
-- `export_runs_excel.py` — dodatkowy raport Excel agregujący metryki dla wybranych katalogów z wynikami.
+- `simulation.py` — core engine that instantiates farmers (`farmer.py`), markets (`market.py`), and writes results to `.pickle`.
+- `farmer.py` — agent definition with linear Q-function approximation (`full`, `Q2`, `Q1`) and optional random policy.
+- `market.py` + `config.py` — market specification, price functions, and costs; includes optional government market.
+- `scenario.py` — shock generator (price bumps, entrants, inflation, technology shocks, etc.).
+- `optimal_allocation.py` — dynamic programming to compute potential and optimal allocations.
+- `summary.py` — reads pickles and produces PNG/CSV summaries.
+- `experiments.py` — library of named scenarios and driver for batch simulations.
+- `export_runs_excel.py` — aggregates multiple runs and writes a concise Excel report.
 
-## Instalacja
+## Installation
 
-1. **Środowisko**: Python 3.11+ (zalecany virtualenv/conda).
-2. **Wymagania**: `pip install -r requirements.txt`. W projekcie wykorzystywane są m.in. `numpy`, `pandas`, `matplotlib`, `seaborn`, `openpyxl`.
-3. **Uwagi MacOS**: W niektórych środowiskach może brakować modułu `numpy._core` podczas ładowania pickli zapisanych przez NumPy 2.x — upewnij się, że masz spójną wersję NumPy (`pip install "numpy>=2.0"`).
+1. **Python 3.11+** recommended (virtualenv/conda).
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+   Required packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `openpyxl`, etc.
+3. **NumPy compatibility**: some runs are pickled with NumPy 2.x; ensure your environment has a matching version (`pip install "numpy>=2.0"`), otherwise loading `results_*` may fail with `ModuleNotFoundError: numpy._core`.
 
-## Uruchamianie symulacji
+## Running Simulations
 
-Najprostszy sposób to wywołać bezpośrednio:
+Simplest entry point:
 
 ```bash
 python simulation.py
 ```
 
-Domyślnie uruchomionych zostanie `N=100` agentów, 1000 iteracji w każdej z 10 rund. Wyniki zapisywane są w katalogu `results/run_<timestamp>` jako `results_market*.pickle`, `results_profits*.pickle`, `results_potential*.pickle` oraz (dla nowych wersji) `results_theta*.pickle`.
+Defaults: `N=100` agents, `T=1000` iterations per episode, `EPISODES=10`. Results go into `results/run_<timestamp>[_expid][_gov]`, containing:
+- `results_market*.pickle` — each farmer’s market choice per iteration,
+- `results_profits*.pickle` — profits per agent per iteration,
+- `results_potential*.pickle` — potential metrics (actual vs. optimal allocations),
+- `results_theta*.pickle` — average Q-parameters per iteration (if enabled).
 
-Parametry możesz nadpisać poprzez wywołanie `run_experiment` z odpowiednimi argumentami (np. `add_gov=True`, `switch_cost`, `scenario`, `model_type="Q1"/"Q2"/"full"`, `random_policy=True`).
+Override via `run_experiment(N=..., T=..., add_gov=True, scenario=[...], switch_cost=..., model_type="full"/"Q2"/"Q1", random_policy=True, exp_id="...")`. See `experiments.py` for reference configurations.
 
-## Scenariusze eksperymentalne
+## Batch Experiments
 
-Skrypt `experiments.py` definiuje gotowe scenariusze (np. `4m_random`, `5m_Q1_shocks`) oraz narzędzie do zbiorczego uruchomienia:
+`experiments.py` contains named scenarios (e.g., `4m_random`, `5m_Q1_shocks`) and an orchestration flow:
 
 ```bash
 python experiments.py --scenario 5m_Q1_shocks
-# lub wszystkie:
+# or run an entire suite:
 python experiments.py --all
 ```
 
-Podczas działania:
-- wywoływana jest symulacja z parametrami scenariusza,
-- tworzony jest `config.json` z metadanymi,
-- automatycznie generowane są wykresy podsumowujące (patrz sekcja poniżej),
-- wyniki pozwalają później spiąć wiele eksperymentów z tabelą `results/experiments_summary.csv`.
+For each scenario:
+1. `run_experiment` executes with merged parameters.
+2. `config.json` (metadata) is stored in the run folder.
+3. `summary.py` is invoked automatically to generate plots/CSV diagnostics in `run_.../plots`.
+4. Metadata and averaged stats can be appended to `results/experiments_summary.csv`.
 
-## Analiza wyników i wykresy
+## Analysis & Plots
 
-Narzędzie `summary.py` przyjmuje parę `results_market*.pickle` + `results_profits*.pickle` (opcjonalnie `results_potential*.pickle` i `results_theta*.pickle`) i generuje zestaw wykresów PNG oraz arkusze CSV:
+`summary.py` consumes the pickles and produces:
 
 ```bash
-python summary.py --market results/run_2025-12-15_11-27-10_4m_random/results_market_4m.pickle \
-                  --profits results/run_2025-12-15_11-27-10_4m_random/results_profits_4m.pickle \
-                  --outdir results/run_2025-12-15_11-27-10_4m_random/plots
+python summary.py \
+    --market results/run_xxx/results_market_4m.pickle \
+    --profits results/run_xxx/results_profits_4m.pickle \
+    --outdir results/run_xxx/plots
 ```
 
-Najważniejsze wykresy:
-- `art_Number_Iter.png` — średnia liczba agentów na rynku w kolejnych iteracjach,
-- `art_Profit_Iter.png` — średnie zyski (całkowite i per rynek, zakres domyślnie ±10),
-- `art_Efficiency_Stability_Iter.png` — porównanie efektywności (`Phi/Phi_max`) i stabilności (procent agentów, którzy pozostali na rynku),
-- `art_Allocation_Optimal_Iter.png` — faktyczna vs. optymalna alokacja z zaznaczonymi szokami (etykiety przy górnej krawędzi),
-- `art_Q_Params_Iter.png` — średnie współczynniki funkcji Q, jeśli zapisano `results_theta*.pickle`.
+Outputs (PNG + CSV):
+- `art_Number_Iter.png` — stacked area chart: average number of agents per market per iteration.
+- `art_Profit_Iter.png` — average profits over iterations (Total line bolded, Y-range limited to [-10, 10]).
+- `art_Efficiency_Stability_Iter.png` — potential ratio vs. stability (share of agents staying put).
+- `art_Allocation_Optimal_Iter.png` — actual vs. optimal allocation with shock annotations (labels near the top).
+- `art_Q_Params_Iter.png` — average Q-parameters (if `results_theta*.pickle` is present).
+- CSV: `diagnostic_episodes.csv`, `episode_efficiency_stats.csv`, etc.
 
-Ponadto generowane są arkusze CSV:
-- `diagnostic_episodes.csv` (szczegółowe dane na poziomie iteracji),
-- `episode_efficiency_stats.csv` (odsetek efektywnych iteracji, szacowany czas dostosowania, odchylenie, itp.),
-- `plots/art_*` — gotowe grafiki do raportów.
+Other plotting utilities include histograms, profit vs. stability scatter plots, and combined efficiency/stability overlays.
 
-## Eksport zbiorczy do Excela
+## Excel Export
 
-Skrypt `export_runs_excel.py` agreguje metryki z wielu katalogów `run_*`. Wspiera dwie formy podania listy:
+`export_runs_excel.py` generates a consolidated Excel sheet for selected runs:
 
-1. Argumenty pozycyjne:
-   ```bash
-   python export_runs_excel.py results/run_... results/run_... --out results/summary.xlsx
-   ```
-2. Plik tekstowy `runs.txt` (po jednej ścieżce na linię, puste linie i wiersze z `#` są ignorowane):
-   ```bash
-   python export_runs_excel.py --runs-file results/runs.txt --out results/summary.xlsx
-   ```
+```bash
+python export_runs_excel.py run_dir1 run_dir2 --out results/summary.xlsx
+# or provide a text file
+python export_runs_excel.py --runs-file results/runs.txt --out results/summary.xlsx
+```
 
-Każdy wiersz w Excelu zawiera m.in.:
-- `efficient_pct` / `adjustment_pct` — średni odsetek efektywnych iteracji i udział czasu dostosowania,
-- `mean_efficiency`, `min_efficiency`, `max_efficiency`, `std_efficiency`, `mean_variance_efficiency` — agregaty potencjału,
-- `mean_stability` — odsetek agentów, którzy nie zmieniali rynku,
-- `avg_profit` — średni zysk w ostatnich 100 iteracjach,
-- `recent_allocation_gap` — suma bezwzględnych różnic między alokacją faktyczną a optymalną (ostatnie 100 iteracji),
-- `eq_start_iteration` — średnia iteracja (po rundach), od której każdorazowo osiągano równowagę (5 kolejnych iteracji z `Phi_ratio > 0.99`),
-- `avg_alloc_*` i `avg_opt_alloc_*` — przeciętne obsady rynków i optimum w końcówce symulacji.
+- `runs` arguments are optional when `--runs-file` is supplied (file lines may include comments `#` and blank lines).
+- Each row contains metrics aggregated across episodes/iterations:
+  - `efficient_pct`, `adjustment_pct` — share of efficient iterations and share spent adapting (based on potential ratio > 0.99 and a 5-step window).
+  - `mean_efficiency`, `min_efficiency`, `max_efficiency`, `std_efficiency`, `mean_variance_efficiency`.
+  - `mean_stability` — fraction of farmers who kept the same market between iterations.
+  - `avg_profit` — mean profit over the last 100 iterations.
+  - `recent_allocation_gap` — sum of absolute differences between actual and optimal allocations (last 100 iterations).
+  - `eq_start_iteration` — average iteration (across episodes) when equilibrium (5 consecutive efficient iterations) was first reached.
+  - `avg_alloc_mX`, `avg_opt_alloc_mX` — average vs. optimal allocation per market in the last 100 iterations, written side-by-side.
 
-## Struktura katalogów
+By default, Excel is saved as `results/<name>.xlsx`; adjust `--out` as needed.
+
+## Directory Structure
 
 - `results/`
-  - `run_<timestamp>[_expid]` — pojedynczy eksperyment.
-    - `config.json` — parametry wejściowe.
-    - `results_market*.pickle`, `results_profits*.pickle`, `results_potential*.pickle`, `results_theta*.pickle`.
-    - `plots/` — wygenerowane wykresy PNG + CSV.
-  - `runs.txt` — przykładowa lista 10 ostatnich katalogów (od najstarszego do najnowszego).
-  - `experiments_summary.csv` — zbiorcze zestawienie scenariuszy po uruchomieniu `experiments.py`.
-- `requirements.txt` — zależności Pythona.
-- `old/` — archiwalne materiały (niewykorzystywane w aktualnej wersji).
+  - `run_<timestamp>[_expid][...]/`
+    - `config.json`
+    - `results_market*.pickle`, `results_profits*.pickle`, `results_potential*.pickle`, `results_theta*.pickle`
+    - `plots/` with all PNG/CSV outputs.
+  - `runs.txt` — sample list of the 10 latest runs (in ascending order, oldest first).
+  - `experiments_summary.csv` — optional aggregated table from `experiments.py`.
+- `requirements.txt` — Python dependencies.
+- `old/` — archived experiments.
 
-## Przydatne wskazówki
+## Tips
 
-- **Reproducible runs**: `simulation.py` przyjmuje ziarno (`seed`), więc możesz odtwarzać eksperymenty.
-- **Tryb losowy**: ustaw `random_policy=True`, by agenci losowo zmieniali rynki (przydatne jako baseline).
-- **Koszty i szoki**: definiuj w `scenario.py` i przekazuj listę zdarzeń przez `run_experiment(..., scenario=[...])`.
-- **Wydajność**: korzystaj z `experiments.py`, aby hurtowo uruchamiać wiele konfiguracji i automatycznie generować raporty.
-- **Eksport**: `export_runs_excel.py` wymaga `openpyxl`; w Excelu łatwo porównać metryki między runami (np. filtry, wykresy pivot).
+- **Reproducibility**: use `seed` and `exp_id` parameters to track runs.
+- **Baseline policy**: set `random_policy=True` to benchmark learning vs. random behavior.
+- **Shock scripting**: define scenarios in `scenario.py` and pass via `run_experiment(..., scenario=SCENARIOS["..."]["scenario"])`.
+- **Performance**: prefer `experiments.py` for multi-run batches; it automates summary generation and metadata logging.
+- **Excel post-processing**: open the exported file in Excel/LibreOffice to filter/sort by scenario, inspect gaps, or build pivot charts.
 
-## Licencja
+## License
 
-Projekt ma charakter badawczy i edukacyjny. Brak formalnej licencji — jeśli chcesz wykorzystać kod komercyjnie, skontaktuj się z autorem repozytorium.
+This codebase is intended for research/educational purposes. No formal license is attached; contact the repository owner if you plan to reuse the code in other contexts.*** End Patch
