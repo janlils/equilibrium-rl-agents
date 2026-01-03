@@ -40,10 +40,143 @@ cm = ListedColormap(colors_hex)
 EFFICIENCY_THRESHOLD = 0.99
 EQUILIBRIUM_WINDOW = 5
 
+_ALLOC_BAND_CACHE: dict[Path, pd.DataFrame] = {}
+_ALLOC_BAND_MISSING: set[Path] = set()
+
+
+def load_alloc_band_dataframe(path_str: str | None) -> pd.DataFrame | None:
+    """
+    Load alloc_band_filled.xlsx once per path for reuse across runs.
+    """
+    if not path_str:
+        return None
+
+    path = Path(path_str)
+    resolved = path.resolve()
+    if not path.exists():
+        if resolved not in _ALLOC_BAND_MISSING:
+            print(f"Info: allocation band file '{path}' not found; skipping band plot.")
+            _ALLOC_BAND_MISSING.add(resolved)
+        return None
+
+    cached = _ALLOC_BAND_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+
+    try:
+        df = pd.read_excel(path, engine="openpyxl")
+    except Exception as exc:
+        print(f"Warning: failed to read allocation band file '{path}': {exc}")
+        _ALLOC_BAND_MISSING.add(resolved)
+        return None
+
+    _ALLOC_BAND_CACHE[resolved] = df
+    return df
+
+
+def _build_shock_marks(scenario_events: Optional[List[Dict[str, Any]]]) -> list[tuple[int, str]]:
+    marks: list[tuple[int, str]] = []
+    if not scenario_events:
+        return marks
+
+    for ev in scenario_events:
+        when = ev.get("when") or {}
+        it = None
+        if "iter" in when:
+            it = int(when["iter"])
+        elif "from_iter" in when:
+            it = int(when["from_iter"])
+        if it is None:
+            continue
+
+        market_id = None
+        event_type = next((k for k in ev.keys() if k != "when"), None)
+        if not event_type:
+            continue
+
+        payload = ev.get(event_type, {})
+        if isinstance(payload, dict):
+            if "market" in payload:
+                market_id = payload["market"]
+            else:
+                for k in payload.keys():
+                    if isinstance(k, int):
+                        market_id = k
+                        break
+                    if isinstance(k, str) and k.isdigit():
+                        market_id = int(k)
+                        break
+
+        if market_id is not None:
+            label = f"{event_type}_m{market_id}"
+        else:
+            label = event_type
+        marks.append((it, label))
+
+    return marks
+
+
+def _draw_shock_markers(ax, scenario_events: Optional[List[Dict[str, Any]]], y_limit: float):
+    shock_marks = _build_shock_marks(scenario_events)
+    ax.set_ylim(0, y_limit)
+    if not shock_marks:
+        return
+
+    xmin, xmax = ax.get_xlim()
+    x_offset = max(0.005 * (xmax - xmin), 0.2)
+
+    for it, label in shock_marks:
+        ax.axvline(
+            x=it,
+            color="red",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.7,
+        )
+        ax.text(
+            it - x_offset,
+            y_limit,
+            label,
+            rotation=90,
+            va="top",
+            ha="right",
+            fontsize=8,
+            alpha=0.8,
+        )
+
+
+def _prepare_band_from_potential(
+    df_potential: Optional[pd.DataFrame],
+    markets_used: List[int],
+) -> Optional[pd.DataFrame]:
+    if df_potential is None:
+        return None
+    cols = ['Iteration']
+    for m in sorted(markets_used):
+        cols.append(f"opt_min_market_{m}")
+        cols.append(f"opt_max_market_{m}")
+    missing = [c for c in cols if c not in df_potential.columns]
+    if missing:
+        return None
+    band_df = (
+        df_potential[cols]
+        .groupby('Iteration')
+        .mean(numeric_only=True)
+        .sort_index()
+    )
+    return band_df
 
 def load_pickle(path: str):
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+def find_run_pickles(run_dir: Path) -> tuple[Path, Path]:
+    market_files = sorted(run_dir.glob("results_market*.pickle"))
+    profit_files = sorted(run_dir.glob("results_profits*.pickle"))
+    if not market_files or not profit_files:
+        raise FileNotFoundError(f"Missing pickle files in {run_dir}")
+    return market_files[0], profit_files[0]
 
 
 def infer_K_and_N(results_market: pd.DataFrame) -> tuple[int, int]:
@@ -171,7 +304,7 @@ def compute_efficiency_series(results_market: pd.DataFrame,
     N = len(agent_cols)
 
     markets_ordered, p_funcs, costs = build_potential_spec(N, markets_used)
-    _, phi_max = dp_potential_max(N, p_funcs, costs)
+    _, phi_max, _, _ = dp_potential_max(N, p_funcs, costs)
     if phi_max == 0:
         phi_max = 1.0
 
@@ -425,96 +558,120 @@ def plot_allocation_with_optimal(
                     alpha=0.9,
                 )
 
-    # Collect shock markers (iteration, label)
-    shock_marks = []
-    if scenario_events:
-        for ev in scenario_events:
-            when = ev.get("when", {})
-            it = None
+    _draw_shock_markers(ax, scenario_events, y_limit=50)
 
-            # Single-iteration shock
-            if "iter" in when:
-                it = int(when["iter"])
-            # From-iteration shock: mark the start
-            elif "from_iter" in when:
-                it = int(when["from_iter"])
-
-            if it is None:
-                continue
-
-            # Determine event type: first key that is not "when"
-            event_type = next((k for k in ev.keys() if k != "when"), None)
-            if event_type is None:
-                event_type = "shock"
-
-            # Try to infer market for label, e.g. "price_bump_m2", "inflation_m3"
-            market_id = None
-            payload = ev.get(event_type, {})
-
-            if isinstance(payload, dict):
-                # Case 1: explicit "market" field, e.g. {"market": 3, "rate": ...}
-                if "market" in payload:
-                    market_id = payload["market"]
-                else:
-                    # Case 2: dict keyed by market id, e.g. {2: +5.0} or {4: +4}
-                    # Take the first key that looks like a market identifier
-                    for k in payload.keys():
-                        # Try to treat numeric or numeric-string keys as market IDs
-                        if isinstance(k, int):
-                            market_id = k
-                            break
-                        if isinstance(k, str) and k.isdigit():
-                            market_id = int(k)
-                            break
-
-            # Build compact label: event_type[_mX]
-            if market_id is not None:
-                label = f"{event_type}_m{market_id}"
-            else:
-                label = event_type
-
-            shock_marks.append((it, label))
-
-    # Draw vertical lines and labels for shocks
-    if shock_marks:
-        ax.set_ylim(0, 50)
-        # Get current limits based on data before adding text
-        ymin, ymax = ax.get_ylim()
-        y_range = ymax - ymin if ymax > ymin else 1.0
-
-        # Place labels exactly at the top boundary of the plot (ymax)
-        label_y = ymax
-        x_offset = max(0.005 * (ax.get_xlim()[1] - ax.get_xlim()[0]), 0.2)
-
-        for it, label in shock_marks:
-            ax.axvline(
-                x=it,
-                color="red",
-                linestyle="--",
-                linewidth=1.0,
-                alpha=0.7,
-            )
-            ax.text(
-                it - x_offset,
-                label_y,
-                label,
-                rotation=90,
-                va="top",
-                ha="right",
-                fontsize=8,
-                alpha=0.8,
-            )
-
-    ax.set_ylim(0, 50)
-
-    ax.set_title(
-        f"Average allocation per market by iteration\n"
-        f"(n_Agents = {N}, n_Episodes = {T})"
-    )
     ax.set_ylabel("Number of agents")
     ax.set_xlabel("Iteration")
 
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="upper right", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(filename, bbox_inches="tight", dpi=300)
+    plt.close()
+
+
+def plot_allocation_with_optimal_band(
+    agg_iter: pd.DataFrame,
+    markets_used: list[int],
+    filename: str,
+    scenario_events: Optional[List[Dict[str, Any]]] = None,
+    smooth: int = 1,
+    band_iter_df: Optional[pd.DataFrame] = None,
+    alloc_band_df: Optional[pd.DataFrame] = None,
+    run_id: Optional[str] = None,
+):
+    """
+    Plot actual allocations together with optimal bands (min/max) sourced from
+    alloc_band_filled.xlsx for the given run_id.
+    """
+    if band_iter_df is not None and not band_iter_df.empty:
+        iterations = band_iter_df.index.to_numpy(dtype=int)
+        band_source = "df"
+    else:
+        if alloc_band_df is None or run_id is None:
+            return
+        if 'run_id' not in alloc_band_df.columns or 'iteration' not in alloc_band_df.columns:
+            return
+        band_run = alloc_band_df[alloc_band_df['run_id'] == run_id].copy()
+        if band_run.empty:
+            print(f"Info: allocation band data for run '{run_id}' not found; skipping band plot.")
+            return
+        band_run = (
+            band_run.dropna(subset=['iteration'])
+            .sort_values('iteration')
+            .drop_duplicates(subset='iteration')
+        )
+        band_iter_df = (
+            band_run.set_index('iteration')
+            .sort_index()
+        )
+        iterations = band_iter_df.index.to_numpy(dtype=int)
+        band_source = "excel"
+    if len(iterations) == 0:
+        return
+
+    plt.figure(figsize=(10, 6))
+    ax = plt.gca()
+
+    for idx, m in enumerate(sorted(markets_used)):
+        color = colors_hex[idx % len(colors_hex)]
+        col_actual = f"count_g{m}"
+        if col_actual not in agg_iter.columns:
+            continue
+
+        series = agg_iter[col_actual]
+        aligned = series.reindex(iterations).interpolate()
+        if smooth > 1:
+            aligned = aligned.rolling(window=smooth, min_periods=1).mean()
+
+        ax.plot(
+            iterations,
+            aligned.values,
+            color=color,
+            linewidth=1.5,
+            label=f"m{m} actual",
+        )
+
+        if band_source == "df":
+            min_col = f"opt_min_market_{m}"
+            max_col = f"opt_max_market_{m}"
+        else:
+            min_col = f"min_m{m}"
+            max_col = f"max_m{m}"
+
+        if min_col in band_iter_df.columns and max_col in band_iter_df.columns:
+            lower = band_iter_df[min_col].astype(float).reindex(iterations).interpolate()
+            upper = band_iter_df[max_col].astype(float).reindex(iterations).interpolate()
+            ax.fill_between(
+                iterations,
+                lower.values,
+                upper.values,
+                color=color,
+                alpha=0.2,
+                label=f"m{m} optimal",
+            )
+            ax.plot(
+                iterations,
+                lower.values,
+                color=color,
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
+            ax.plot(
+                iterations,
+                upper.values,
+                color=color,
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
+
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Number of agents")
+    ax.grid(True, alpha=0.3)
+    _draw_shock_markers(ax, scenario_events, y_limit=45)
+    ax.legend(ncol=2, fontsize=8, loc="lower left")
+
     plt.tight_layout()
     plt.savefig(filename, bbox_inches="tight", dpi=300)
     plt.close()
@@ -523,12 +680,10 @@ def plot_allocation_with_optimal(
 def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T):
     tmp = agg_iter[[f"count_g{m}" for m in markets_used]].copy()
     tmp.columns = [f"market_{m}" for m in markets_used]
-    ax = tmp.plot(
-        title=f'Average number of agents in the market by iteration \n (n_Agents = {N}, n_Episodes = {T})',
-        colormap=cm, kind='area', stacked=True, grid=True
-    )
+    ax = tmp.plot(colormap=cm, kind='area', stacked=True, grid=True)
     ax.set_ylabel('Number of agents')
     ax.set_xlabel('Iteration')
+    ax.set_title("")
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -537,10 +692,7 @@ def plot_number_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
 def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: str, N, T):
     tmp = agg_iter[['mean'] + [f"mean_g{m}" for m in markets_used]].copy()
     tmp.columns = ['Total'] + [f"market_{m}" for m in markets_used]
-    ax = tmp.plot(
-        title=f'Average profit by iteration \n (n_Agents = {N}, n_Episodes = {T})',
-        colormap=cm, grid=True
-    )
+    ax = tmp.plot(colormap=cm, grid=True)
     # bold the Total line 
     for line in ax.get_lines():
         if line.get_label() == 'Total':
@@ -551,6 +703,7 @@ def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
             line.set_zorder(0)
     ax.set_ylabel('Profit')
     ax.set_xlabel('Iteration')
+    ax.set_title("")
     ax.set_ylim(-10.0, 10.0)
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
@@ -558,13 +711,11 @@ def plot_profit_iter(agg_iter: pd.DataFrame, markets_used: list[int], filename: 
 
 
 def plot_decision_changes(agg_iter: pd.DataFrame, filename: str, N, T):
-    ax = agg_iter[['stability']].plot(
-        title=f'Stability by iteration \n(n_Agents = {N}, n_Episodes = {T})',
-        colormap=cm, grid=True
-    )
+    ax = agg_iter[['stability']].plot(colormap=cm, grid=True)
     ax.set_ylabel('Stability (fraction of agents not changing market)')
     ax.set_xlabel('Iteration')
     ax.set_ylim(0.0, 1.0)
+    ax.set_title("")
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -583,12 +734,10 @@ def plot_theta_iter(df_theta: pd.DataFrame, filename: str, N: int, T: int):
         .mean(numeric_only=True)
     )
 
-    ax = agg.plot(
-        title=f'Average Q-parameters by iteration \n (n_Agents = {N}, n_Episodes = {T})',
-        grid=True
-    )
+    ax = agg.plot(grid=True)
     ax.set_ylabel('Average parameter value')
     ax.set_xlabel('Iteration')
+    ax.set_title("")
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -597,14 +746,11 @@ def plot_efficiency_iter(eff_by_iter: pd.Series, filename: str, N, T):
     """
     Plot average potential efficiency (Phi / Phi_max) by iteration (round).
     """
-    ax = eff_by_iter.plot(
-        title=f'Average potential efficiency by iteration \n (n_Agents = {N}, n_Episodes = {T})',
-        colormap=cm,
-        grid=True
-    )
+    ax = eff_by_iter.plot(colormap=cm, grid=True)
     ax.set_ylabel('Potential ratio (Phi / Phi_max)')
     ax.set_xlabel('Iteration')
     ax.set_ylim(0.0, 1.05)
+    ax.set_title("")
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -626,15 +772,13 @@ def plot_efficiency_and_stability_iter(agg_iter: pd.DataFrame,
     # Remove rows where any of the series is NaN
     df = df.dropna(subset=['efficiency', 'stability'])
 
-    ax = df[['efficiency', 'stability']].plot(
-        title=f'Efficiency and stability by iteration\n(n_Agents = {N}, n_Episodes = {T})',
-        grid=True
-    )
+    ax = df[['efficiency', 'stability']].plot(grid=True)
 
     ax.set_xlabel('Iteration')
     ax.set_ylim(0.0, 1.0)
 
     ax.legend(['Efficiency (Phi / Phi_max)', 'Stability (1 = no agent changed)'])
+    ax.set_title("")
 
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()
@@ -656,9 +800,7 @@ def plot_profits_vs_changes(agent_avg_profits, agent_avg_changes, filename: str)
         scatter_kws={'s': 1, 'color': '#24325F'},
         line_kws=dict(color='#FB6467')
     )
-    ax.set(
-        title='Profits vs. stability \n(each dot represents a single agent in one episode)'
-    )
+    ax.set_title("")
     ax.set_xlabel('Stability (fraction of agents not changing market)')
     ax.set_ylabel('Profit')
 
@@ -690,7 +832,7 @@ def plot_efficiency_vs_changes(summary_df: pd.DataFrame,
         scatter_kws={'s': 1, 'color': '#24325F'},
         line_kws=dict(color='#FB6467')
     )
-    ax.set_title('Efficiency vs. stability \n(each dot is one iteration in one episode)')
+    ax.set_title("")
     ax.set_xlabel('Efficiency (potential ratio)')
     ax.set_ylabel('Stability (fraction of agents not changing market)')
 
@@ -742,7 +884,7 @@ def plot_efficiency_hist_last_iter(eff_series: pd.Series,
     plt.xticks(x, [f"Ep {ep}" for ep in rounds])
     plt.ylim(0, 1.05)
 
-    plt.title("Mean efficiency across all iterations (per episode)")
+    plt.title("")
     plt.xlabel("Episode")
     plt.ylabel("Mean efficiency (Phi / Phi_max)")
 
@@ -766,7 +908,60 @@ def main():
         help="Experiment ID used in run directory name (run_<timestamp>_<exp_id>[_...]). "
              "Used only when --market/--profits are not provided."
     )
+    ap.add_argument(
+        "--runs-file",
+        help="Path to a text file with run directories (one per line) to process sequentially.",
+    )
+    ap.add_argument(
+        "--alloc-band",
+        default="results/alloc_band_filled.xlsx",
+        help="Path to alloc_band_filled.xlsx for optimal bands (set empty string to skip).",
+    )
     args = ap.parse_args()
+    alloc_band_path = args.alloc_band.strip() if args.alloc_band else ""
+
+    if args.runs_file:
+        runs_path = Path(args.runs_file)
+        if not runs_path.exists():
+            print(f"Error: runs file {runs_path} not found.")
+            sys.exit(1)
+
+        run_dirs: list[Path] = []
+        for line in runs_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            run_dirs.append(Path(line).resolve())
+
+        if not run_dirs:
+            print(f"Error: no valid run directories listed in {runs_path}.")
+            sys.exit(1)
+
+        for run_dir in run_dirs:
+            if not run_dir.exists():
+                print(f"[WARN] Run directory {run_dir} not found. Skipping.")
+                continue
+            try:
+                market_path, profit_path = find_run_pickles(run_dir)
+            except FileNotFoundError as exc:
+                print(f"[WARN] {exc}")
+                continue
+
+            if args.outdir:
+                base_out = Path(args.outdir)
+                outdir = base_out / run_dir.name if len(run_dirs) > 1 else base_out
+            else:
+                outdir = run_dir / "plots"
+
+            run_summary(
+                market=str(market_path),
+                profits=str(profit_path),
+                outdir=str(outdir),
+                episode=args.episode,
+                exp_id=args.exp_id,
+                alloc_band=alloc_band_path,
+            )
+        return
 
     # --- If no pickle paths are provided, automatically select the latest run ---
     if not args.market or not args.profits:
@@ -918,7 +1113,9 @@ def main():
     # Aggregate by Iteration
     agg_iter = group_by_iteration_means(summary_df, markets_used)
 
+    band_iter_df = None
     if df_potential is not None:
+        band_iter_df = _prepare_band_from_potential(df_potential, markets_used)
         key = ['Round', 'Iteration']
         tmp = results_market[key].merge(
             df_potential[key + ['Phi_ratio']],
@@ -957,6 +1154,19 @@ def main():
         T=T,
         scenario_events=scenario_events,
         scenario_name=scenario_name,
+    )
+    excel_band_df = None
+    run_id = Path(args.market).parent.name
+    if band_iter_df is None:
+        excel_band_df = load_alloc_band_dataframe(alloc_band_path)
+    plot_allocation_with_optimal_band(
+        agg_iter=agg_iter,
+        markets_used=markets_used,
+        filename=outdir / "art_Allocation_Band_Iter.png",
+        scenario_events=scenario_events,
+        band_iter_df=band_iter_df,
+        alloc_band_df=excel_band_df,
+        run_id=run_id,
     )
     if df_theta is not None and not df_theta.empty:
         plot_theta_iter(df_theta, outdir / 'art_Q_Params_Iter.png', N, T)
@@ -1024,7 +1234,7 @@ def main():
         cols_to_take = ['Phi', 'Phi_max', 'Phi_ratio']
         # Optional per-market columns (created in simulation.py)
         for m in sorted(markets_used):
-            for col in (f"opt_n_market_{m}", f"price_market_{m}"):
+            for col in (f"opt_n_market_{m}", f"opt_min_market_{m}", f"opt_max_market_{m}", f"price_market_{m}"):
                 if col in df_potential.columns:
                     cols_to_take.append(col)
 
@@ -1044,9 +1254,15 @@ def main():
         # Copy optimal allocations and prices per market, if present
         for m in sorted(markets_used):
             opt_col = f"opt_n_market_{m}"
+            opt_min_col = f"opt_min_market_{m}"
+            opt_max_col = f"opt_max_market_{m}"
             price_col = f"price_market_{m}"
             if opt_col in merged.columns:
                 diag[opt_col] = merged[opt_col]
+            if opt_min_col in merged.columns:
+                diag[opt_min_col] = merged[opt_min_col]
+            if opt_max_col in merged.columns:
+                diag[opt_max_col] = merged[opt_max_col]
             if price_col in merged.columns:
                 diag[price_col] = merged[price_col]
     else:
@@ -1080,6 +1296,12 @@ def main():
             ordered_cols.append(n_col)
         if opt_col in diag.columns:
             ordered_cols.append(opt_col)
+        opt_min_col = f"opt_min_market_{m}"
+        opt_max_col = f"opt_max_market_{m}"
+        if opt_min_col in diag.columns:
+            ordered_cols.append(opt_min_col)
+        if opt_max_col in diag.columns:
+            ordered_cols.append(opt_max_col)
         if price_col in diag.columns:
             ordered_cols.append(price_col)
         if mean_p_col in diag.columns:
@@ -1129,6 +1351,7 @@ def run_summary(
     outdir: str | None = None,
     episode: int | None = None,
     exp_id: str | None = None,
+    alloc_band: str | None = None,
 ):
     """Programmatic wrapper around the CLI interface.
 
@@ -1148,6 +1371,8 @@ def run_summary(
         argv += ["--episode", str(episode)]
     if exp_id is not None:
         argv += ["--exp_id", exp_id]
+    if alloc_band is not None:
+        argv += ["--alloc-band", alloc_band]
 
     old_argv = sys.argv
     try:

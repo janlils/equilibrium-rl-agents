@@ -44,7 +44,7 @@ def dp_potential_max(
     N: int,
     p_funcs: List[Callable[[int], float]],
     cost: List[float],
-) -> Tuple[List[int], float]:
+) -> Tuple[List[int], float, List[int], List[int]]:
     """
     Exact DP for maximizing Rosenthal potential:
         Phi(n) = sum_i F_i(n_i),  where F_i(n) = sum_{k=1..n} (p_i(k) - c_i).
@@ -82,14 +82,65 @@ def dp_potential_max(
             dp[i][j] = best_val
             choice[i][j] = best_n
 
-    # backtrack
+    # backtrack single optimal allocation
     alloc = [0] * G
     j = N
     for i in range(G, 0, -1):
         alloc[i - 1] = choice[i][j]
         j -= alloc[i - 1]
 
-    return alloc, dp[G][N]
+    phi_max = dp[G][N]
+
+    # Build suffix DP to identify all optimal allocations
+    dp_suffix = [[NEG] * (N + 1) for _ in range(G + 2)]
+    dp_suffix[G + 1][0] = 0.0
+    for i in range(G, 0, -1):
+        for j in range(0, N + 1):
+            best_val = NEG
+            for n_take in range(0, j + 1):
+                prev = dp_suffix[i + 1][j - n_take]
+                if prev == NEG:
+                    continue
+                val = prev + F[i - 1][n_take]
+                if val > best_val:
+                    best_val = val
+            dp_suffix[i][j] = best_val
+
+    EPS = 1e-6
+    min_alloc = [0] * G
+    max_alloc = [0] * G
+    for i in range(1, G + 1):
+        mn = None
+        mx = None
+        for n_take in range(0, N + 1):
+            feasible = False
+            for left_agents in range(0, N - n_take + 1):
+                left_val = dp[i - 1][left_agents]
+                if left_val == NEG:
+                    continue
+                right_agents = N - left_agents - n_take
+                if right_agents < 0:
+                    continue
+                right_val = dp_suffix[i + 1][right_agents]
+                if right_val == NEG:
+                    continue
+                total = left_val + F[i - 1][n_take] + right_val
+                if abs(total - phi_max) <= EPS:
+                    feasible = True
+                    break
+            if feasible:
+                if mn is None or n_take < mn:
+                    mn = n_take
+                if mx is None or n_take > mx:
+                    mx = n_take
+        if mn is None:
+            mn = alloc[i - 1]
+        if mx is None:
+            mx = alloc[i - 1]
+        min_alloc[i - 1] = mn
+        max_alloc[i - 1] = mx
+
+    return alloc, phi_max, min_alloc, max_alloc
 
 def potential_normalized(
     N: int, p_funcs: List[Callable[[int], float]], cost: List[float], alloc: List[int]
@@ -99,7 +150,7 @@ def potential_normalized(
     (defined as 1.0 when Phi_max == 0).
     """
     phi = potential(p_funcs, cost, alloc)
-    _, phi_max = dp_potential_max(N, p_funcs, cost)
+    _, phi_max, _, _ = dp_potential_max(N, p_funcs, cost)
     ratio = (phi / phi_max) if phi_max != 0 else 1.0
     return phi, phi_max, ratio
 
@@ -121,8 +172,10 @@ if __name__ == "__main__":
     p_funcs: List[Callable[[int], float]] = [p1, p2, p3, p4, p5]
 
     # --- 1) Equilibrium (max potential) ---
-    alloc_eq, phi_max = dp_potential_max(N, p_funcs, cost)
+    alloc_eq, phi_max, min_alloc, max_alloc = dp_potential_max(N, p_funcs, cost)
     print("Equilibrium (max potential) allocation:", alloc_eq)
+    print("Min per market:", min_alloc)
+    print("Max per market:", max_alloc)
     print("Phi_max:", phi_max)
 
     # --- 2) Quality of any given allocation (closeness to optimal potential) ---

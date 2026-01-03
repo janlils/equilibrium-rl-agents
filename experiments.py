@@ -16,6 +16,7 @@ import pandas as pd
 
 from simulation import run_experiment
 from summary import run_summary
+from export_runs_excel import export_runs_summary_to_excel
 
 EXPERIMENT_SUMMARIES: List[Dict[str, Any]] = []
 
@@ -223,19 +224,33 @@ def run_scenario(name: str) -> Path:
     # Generate plots and diagnostics for this experiment
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
-    run_summary(exp_id=exp_id, outdir=str(plots_dir))
+    alloc_band_default = "results/alloc_band_filled.xlsx"
+    run_summary(
+        exp_id=exp_id,
+        outdir=str(plots_dir),
+        alloc_band=alloc_band_default,
+    )
     _record_experiment_summary(name, params, scenario, run_dir)
 
     return run_dir
 
 
+def _write_summary_latest(run_dirs: List[Path]) -> None:
+    if not run_dirs:
+        return
+    out_path = Path("results") / "summary_latest.xlsx"
+    export_runs_summary_to_excel(run_dirs, out_path)
+
+
 def run_all(selected: List[str] | None = None) -> None:
     """Run all scenarios, or a selected subset."""
     names = selected if selected else list(SCENARIOS.keys())
+    produced_runs: List[Path] = []
     for name in names:
         print(f"\n========== Running scenario: {name} ==========")
-        run_scenario(name)
+        produced_runs.append(run_scenario(name))
     _write_experiment_summary_table()
+    _write_summary_latest(produced_runs)
 
 
 if __name__ == "__main__":

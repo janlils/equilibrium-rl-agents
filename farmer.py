@@ -261,7 +261,7 @@ class Farmer:
 
     # ---------- main API  ----------
     def choose_action(self, state: Dict[MarketId, int], it: int = 0) -> MarketId:
-        """ε-greedy policy: choose next market to move to and store (s_t, a_t)."""
+        """Choose next market and store (s_t, a_t) for the next step."""
         self.prices_at_decision = {m: self.board_price(m, int(state[m])) for m in self.markets}        
 
         # agent-specific exploration rate
@@ -273,7 +273,7 @@ class Farmer:
         if np.random.rand() < eps:
             a = int(np.random.choice(self.markets))
         else:
-        # compute Q(s, a) for all markets
+            # compute Q(s, a) for all markets
             Qs = Farmer.getQs(
                 self.model,
                 state,

@@ -34,6 +34,8 @@ Agent-based SARSA simulation for market selection with linear value approximatio
 
 ## Running Simulations
 
+> **Quick start / Reproducibility for papers:** run `python experiments.py` (optionally with `--only scenario1 scenario2`). This single command launches every configured scenario, produces all plots/diagnostics under each `run_*/plots/`, and writes two tables in `results/`: `experiments_summary.csv` plus `summary_latest.xlsx` (Excel report with one row per run). Each `run_*` folder also stores the exact `config.json` used for that scenario, so reproducing the results for an article amounts to (1) `pip install -r requirements.txt`, (2) `python experiments.py`, and (3) packaging the `results/` directory with the paper.
+
 Simplest entry point:
 
 ```bash
@@ -66,13 +68,14 @@ For each scenario:
 
 ## Analysis & Plots
 
-`summary.py` consumes the pickles and produces:
+`summary.py` consumes the pickles and produces (include `--alloc-band` if you want the optimal allocation bands generated from `results/alloc_band_filled.xlsx`; you can also pass `--runs-file results/runs.txt` to batch-process many folders):
 
 ```bash
 python summary.py \
     --market results/run_xxx/results_market_4m.pickle \
     --profits results/run_xxx/results_profits_4m.pickle \
-    --outdir results/run_xxx/plots
+    --outdir results/run_xxx/plots \
+    --alloc-band results/alloc_band_filled.xlsx
 ```
 
 Outputs (PNG + CSV):
@@ -87,7 +90,7 @@ Other plotting utilities include histograms, profit vs. stability scatter plots,
 
 ## Excel Export
 
-`export_runs_excel.py` generates a consolidated Excel sheet for selected runs:
+`export_runs_excel.py` generates a consolidated Excel sheet for selected runs (the same functionality runs automatically at the end of `python experiments.py`, producing `results/summary_latest.xlsx`):
 
 ```bash
 python export_runs_excel.py run_dir1 run_dir2 --out results/summary.xlsx

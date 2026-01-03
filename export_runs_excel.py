@@ -1,4 +1,5 @@
 import argparse
+import json
 import pickle
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
@@ -140,6 +141,83 @@ def compute_mean_stability(df_market: pd.DataFrame) -> float:
     return float(np.mean(stabilities))
 
 
+def extract_shock_points(run_dir: Path) -> List[int]:
+    cfg_path = run_dir / "config.json"
+    if not cfg_path.exists():
+        return []
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return []
+    scenario = cfg.get("scenario") or []
+    points: List[int] = []
+    for ev in scenario:
+        when = ev.get("when") or {}
+        it = None
+        if "iter" in when:
+            it = int(when["iter"])
+        elif "from_iter" in when:
+            it = int(when["from_iter"])
+        if it is not None:
+            points.append(it)
+    points = sorted(set(points))
+    return points
+
+
+def _recovery_duration_for_round(
+    iter_vals: np.ndarray,
+    eff_vals: np.ndarray,
+    start_iter: int,
+    next_iter: Optional[int],
+    total_iters: int,
+) -> Optional[float]:
+    if total_iters <= 0 or start_iter > total_iters:
+        return None
+
+    window = EQUILIBRIUM_WINDOW
+    consec = 0
+    for it, eff in zip(iter_vals, eff_vals):
+        if it < start_iter:
+            continue
+        if next_iter is not None and it >= next_iter:
+            break
+        if np.isnan(eff):
+            consec = 0
+            continue
+        if eff > EFFICIENCY_THRESHOLD:
+            consec += 1
+        else:
+            consec = 0
+        if consec >= window:
+            return max(0.0, float(it - start_iter + 1))
+    return float(total_iters)
+
+
+def compute_recovery_after_shocks(df_pot: pd.DataFrame, shock_points: List[int]) -> float:
+    if not shock_points:
+        return float('nan')
+
+    durations: List[float] = []
+    grouped = df_pot[['Round', 'Iteration', 'Phi_ratio']].dropna(subset=['Round']).groupby('Round')
+    for _, grp in grouped:
+        grp_sorted = grp.sort_values('Iteration')
+        if grp_sorted.empty:
+            continue
+        iter_vals = grp_sorted['Iteration'].to_numpy(dtype=int)
+        eff_vals = grp_sorted['Phi_ratio'].to_numpy(dtype=float)
+        total_iters = int(grp_sorted['Iteration'].max())
+        for idx, start in enumerate(shock_points):
+            next_start = shock_points[idx + 1] if idx + 1 < len(shock_points) else None
+            duration = _recovery_duration_for_round(iter_vals, eff_vals, start, next_start, total_iters)
+            if duration is not None:
+                durations.append(duration)
+
+    if not durations:
+        return float('nan')
+    return float(np.mean(durations))
+
+
 def summarize_run(run_dir: Path) -> Optional[dict]:
     pot_path = _find_first(run_dir, "results_potential*.pickle")
     profits_path = _find_first(run_dir, "results_profits*.pickle")
@@ -215,6 +293,9 @@ def summarize_run(run_dir: Path) -> Optional[dict]:
         optimal = recent_pot[f"opt_n_market_{suffix}"]
         alloc_diff += float((actual - optimal).abs().sum())
 
+    shock_points = extract_shock_points(run_dir)
+    recovery_after_shocks = compute_recovery_after_shocks(df_pot_sorted, shock_points)
+
     summary = {
         'run_id': run_dir.name,
         'efficient_pct': eff_pct,
@@ -228,6 +309,7 @@ def summarize_run(run_dir: Path) -> Optional[dict]:
         'avg_profit': avg_profit,
         'recent_allocation_gap': alloc_diff,
         'eq_start_iteration': eq_start,
+        'avg_recovery_iters_after_shocks': recovery_after_shocks,
     }
     suffixes = set()
     suffixes.update(k.split('_')[-1] for k in avg_alloc.keys())

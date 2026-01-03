@@ -181,7 +181,7 @@ def run_experiment(
             phi = potential(p_funcs_iter, costs_iter, alloc)
 
             # Optimal potential and allocation for this game instance
-            alloc_max, phi_max = dp_potential_max(N, p_funcs_iter, costs_iter)
+            alloc_max, phi_max, opt_min_range, opt_max_range = dp_potential_max(N, p_funcs_iter, costs_iter)
             phi_ratio = phi / phi_max if phi_max != 0 else 1.0
 
             # Actual allocation, optimal allocation and current prices per market
@@ -196,6 +196,8 @@ def run_experiment(
                 [ep, it + 1, phi, phi_max, phi_ratio]
                 + actual_alloc_row
                 + optimal_alloc_row
+                + opt_min_range
+                + opt_max_range
                 + price_row
             )
 
@@ -273,6 +275,8 @@ def run_experiment(
         ['Round', 'Iteration', 'Phi', 'Phi_max', 'Phi_ratio']
         + [f"n_market_{m}" for m in markets_ordered]          # actual allocation per market
         + [f"opt_n_market_{m}" for m in markets_ordered]      # optimal allocation per market
+        + [f"opt_min_market_{m}" for m in markets_ordered]    # min optimal allocation per market
+        + [f"opt_max_market_{m}" for m in markets_ordered]    # max optimal allocation per market
         + [f"price_market_{m}" for m in markets_ordered]      # market prices
     )
 
