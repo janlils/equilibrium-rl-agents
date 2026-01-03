@@ -1,4 +1,4 @@
-# sarsa-farmers
+# EQUILIBRIUM EMERGENCE IN MULTI-MARKET ENVIRONMENT WITH LEARNING AGENTS
 
 Agent-based SARSA simulation for market selection with linear value approximation. Agents learn which market to join or stay on given price-feedback, costs, switching frictions, and exogenous shocks. The simulator tracks actual vs. optimal allocations and produces visual summaries and aggregate statistics.
 
