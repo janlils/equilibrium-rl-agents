@@ -9,7 +9,8 @@ Agent-based SARSA simulation for market selection with linear value approximatio
 4. [Batch Experiments](#batch-experiments)
 5. [Analysis & Plots](#analysis--plots)
 6. [Excel Export](#excel-export)
-7. [Directory Structure](#directory-structure)
+7. [Robustness](#robustness)
+8. [Directory Structure](#directory-structure)
 
 ## Architecture
 
@@ -109,6 +110,45 @@ python export_runs_excel.py --runs-file results/runs.txt --out results/summary.x
   - `avg_alloc_mX`, `avg_opt_alloc_mX` — average vs. optimal allocation per market in the last 100 iterations, written side-by-side.
 
 By default, Excel is saved as `results/<name>.xlsx`; adjust `--out` as needed.
+
+## Robustness 
+
+The project includes a dedicated robustness runner that tests **only Q2** and avoids full Cartesian grids:
+
+```bash
+# seeds only (baseline params)
+python robustness_checks.py --ofat --ofat-seeds --scenarios 5m_Q2_shocks
+
+# hyperparameters only (fixed seed)
+python robustness_checks.py --ofat --ofat-params --scenarios 5m_Q2_shocks
+
+# shock variants only (fixed seed)
+python robustness_checks.py --ofat --shock-only --scenarios 5m_Q2_shocks --shock-variants 100 --shock-permute-when
+```
+
+**Baseline** (edit in `robustness_checks.py`):
+- `N=100`, `T=1000`, `episodes=5`
+- `alpha=0.05`, `gamma=0.90`, `eps_min=0.01`, `eps_max=0.10`
+- `model_type=Q2`, `random_policy=False`
+
+**ranges** (edit in `robustness_checks.py`):
+- `N`: 25, 50, 100, 150
+- `T`: 1000, 2000
+- `episodes`: 5, 10, 30, 50
+- `alpha`: 0.005, 0.01, 0.02, 0.05, 0.1, 0.2
+- `gamma`: 0.7, 0.8, 0.9, 0.95, 0.99
+- `eps_pairs`: (0.001,0.05), (0.005,0.05), (0.01,0.10), (0.02,0.20), (0.05,0.30)
+
+**Outputs**
+- `results/robustness_summary.xlsx` — merged run summary (auto-append).
+- `results/robustness_runs.csv` — manifest with full parameters per run.
+- `results/robustness_report/` — aggregated table + plots.
+
+Appendix plots (PNG) can be generated with:
+
+```bash
+python robustness_appendix_plots.py
+```
 
 ## Directory Structure
 

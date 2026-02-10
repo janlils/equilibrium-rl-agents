@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 # simulation.py
 import numpy as np, random, pickle
-from typing import List
+from typing import List, Optional
 from config import base_spec, add_constant_market
 from market import Market
 from farmer import Farmer, INFLATION_RULES
@@ -23,10 +25,14 @@ def run_experiment(
     add_gov: bool = False,
     switch_cost = 0,
     seed: int = 1411,
-    scenario: list[dict] | None = None,
-    exp_id: str | None = None, 
+    scenario: Optional[List[dict]] = None,
+    exp_id: Optional[str] = None,
     random_policy: bool = False,
     model_type: str = "full",
+    gamma: float = 0.90,
+    alpha: float = 0.05,
+    eps_min: float = 0.01,
+    eps_max: float = 0.10,
 ):
 
     # Reproducibility
@@ -52,8 +58,8 @@ def run_experiment(
     )
 
     results_market, results_profits, results_potential = [], [], []
-    results_theta: list[list[float]] = []
-    theta_feature_names: list[str] | None = None
+    results_theta: List[List[float]] = []
+    theta_feature_names: Optional[List[str]] = None
 
     for ep in range(episodes):          # episodes
         print(f"=== Episode {ep + 1}/{episodes} ===")
@@ -62,7 +68,17 @@ def run_experiment(
         public_price_board = {m: {} for m in markets_ordered}         
 
         farmers = [
-            Farmer(i, spec.markets, spec.costs, switch_cost=switch_cost, model_type=model_type,)
+            Farmer(
+                i,
+                spec.markets,
+                spec.costs,
+                switch_cost=switch_cost,
+                model_type=model_type,
+                gamma=gamma,
+                alpha=alpha,
+                eps_min=eps_min,
+                eps_max=eps_max,
+            )
             for i in range(N)
         ]
         if theta_feature_names is None:

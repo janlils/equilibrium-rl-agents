@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # scenario.py
 """
 Shock/Scenario engine for the RL market experiment.
@@ -11,7 +13,7 @@ Usage:
         ...  # rest of the loop
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from config import MarketId
 from farmer import INFLATION_RULES
@@ -24,6 +26,7 @@ class ShockEngine:
     spec_costs: Optional[Dict[MarketId, float]] = None
     # Internal rules assembled from scenario
     inflation_rules: List[Dict[str, Any]] = field(default_factory=list)
+    _applied_once: set[Tuple[int, int]] = field(default_factory=set)
 
     def _matches_when(self, ev_when: Dict[str, Any], ep: int, it: int) -> bool:
         if ev_when is None:
@@ -110,18 +113,27 @@ class ShockEngine:
 
     def tick(self, ep: int, it: int, market, farmers):
         # 1) process events scheduled exactly at this tick
-        for ev in self.scenario:
+        for idx, ev in enumerate(self.scenario):
             if not self._matches_when(ev.get("when", {}), ep, it):
                 continue
+            # Apply-once for additive shocks to avoid repeated accumulation
+            ev_key = (idx, ep)
+            if ev_key in self._applied_once:
+                # still allow idempotent events (inflation/technology/set) to re-apply
+                if any(k in ev for k in ("price_bump", "entrants", "cost_shock")):
+                    continue
             if "price_bump" in ev:
                 self._apply_price_bump(market, ev["price_bump"])
+                self._applied_once.add(ev_key)
             if "technology" in ev:
                 self._apply_technology(market, ev["technology"])
             if "entrants" in ev:
                 self._apply_entrants(market, ev["entrants"])
+                self._applied_once.add(ev_key)
             if "transaction_cost" in ev:
                 self._apply_transaction_cost(farmers, ev["transaction_cost"])
             if "cost_shock" in ev:
                 self._apply_cost_shock(farmers, ev["cost_shock"])
+                self._applied_once.add(ev_key)
             if "inflation" in ev:
                 self._apply_inflation_rule(ev["inflation"])

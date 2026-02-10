@@ -4,8 +4,10 @@ from typing import Dict, Tuple, Optional
 from config import MarketId, PriceFn
 
 INFLATION_RULES: Dict[Optional[int], Dict[str, float]] = {}
-GAMMA = 0.90
-ALPHA = 0.05
+DEFAULT_GAMMA = 0.90
+DEFAULT_ALPHA = 0.05
+DEFAULT_EPS_MIN = 0.01
+DEFAULT_EPS_MAX = 0.10
 PROFIT_SCALE = 10.0
 
 class Model:
@@ -189,6 +191,10 @@ class Farmer:
         costs: Dict[MarketId, float],
         switch_cost: float = 1,
         model_type: str = "full",
+        gamma: float = DEFAULT_GAMMA,
+        alpha: float = DEFAULT_ALPHA,
+        eps_min: float = DEFAULT_EPS_MIN,
+        eps_max: float = DEFAULT_EPS_MAX,
     ):
         self.id = id
         self.markets = markets
@@ -220,6 +226,10 @@ class Farmer:
         self.output_multiplier: Dict[MarketId, float] = {int(m): 1.0 for m in markets}
 
         self.random_policy = False
+        self.gamma = float(gamma)
+        self.alpha = float(alpha)
+        self.eps_min = float(eps_min)
+        self.eps_max = float(eps_max)
 
         self.last_prices = {m: 0.0 for m in self.markets}
         self.prices_at_decision = dict(self.last_prices)   
@@ -358,15 +368,12 @@ class Farmer:
         regret = max(0.0, best_profit - self.profit)
 
         # Map dissatisfaction in [0, +∞) to epsilon in [EPS_MIN, EPS_MAX]
-        EPS_MIN = 0.01
-        EPS_MAX = 0.1
-
         tau = 1.0
 
         if regret > tau:
-            self.eps = EPS_MAX
+            self.eps = self.eps_max
         else:
-            self.eps = EPS_MIN
+            self.eps = self.eps_min
 
     def board_price(self, m, n_eff):
         board = getattr(self, "public_price_board", None)
@@ -431,10 +438,10 @@ class Farmer:
             self.switch_cost,
         )
 
-        td = (r_t + GAMMA * q_next) - q_sa
+        td = (r_t + self.gamma * q_next) - q_sa
 
         # Gradient step in parameter space
-        self.model.theta += ALPHA * td * grad
+        self.model.theta += self.alpha * td * grad
 
         # Move forward in time
         self.state_t = s_tp1
