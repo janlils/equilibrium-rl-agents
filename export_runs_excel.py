@@ -9,6 +9,7 @@ import pandas as pd
 
 EFFICIENCY_THRESHOLD = 0.99
 EQUILIBRIUM_WINDOW = 5
+RECENT_ITERATIONS = 100
 
 
 def load_pickle(path: Path):
@@ -118,6 +119,25 @@ def compute_episode_stats(df_potential: pd.DataFrame) -> pd.DataFrame:
 def _find_first(path: Path, pattern: str) -> Optional[Path]:
     files = sorted(path.glob(pattern))
     return files[0] if files else None
+
+
+def select_recent_iterations(
+    df: pd.DataFrame,
+    n: int = RECENT_ITERATIONS,
+) -> pd.DataFrame:
+    """Select the final ``n`` observations separately for every episode.
+
+    Simulation output contains multiple episodes in the ``Round`` column.  A
+    global ``tail(n)`` would therefore retain only the final episode after
+    sorting, rather than the final iterations of every episode.
+    """
+    if {'Round', 'Iteration'}.issubset(df.columns):
+        return (
+            df.sort_values(['Round', 'Iteration'])
+            .groupby('Round', group_keys=False)
+            .tail(n)
+        )
+    return df.tail(n)
 
 
 def compute_mean_stability(df_market: pd.DataFrame) -> float:
@@ -266,17 +286,14 @@ def summarize_run(run_dir: Path) -> Optional[dict]:
         df_profits = pd.DataFrame(df_profits)
     agent_cols = [c for c in df_profits.columns if isinstance(c, int)]
     if agent_cols:
-        if {'Round', 'Iteration'}.issubset(df_profits.columns):
-            profits_sorted = df_profits.sort_values(['Round', 'Iteration']).tail(100)
-        else:
-            profits_sorted = df_profits.tail(100)
+        profits_sorted = select_recent_iterations(df_profits)
         avg_profit = float(profits_sorted[agent_cols].to_numpy().mean())
     else:
         avg_profit = np.nan
 
     alloc_cols = [c for c in df_pot_sorted.columns if c.startswith("n_market_")]
     opt_cols = [c for c in df_pot_sorted.columns if c.startswith("opt_n_market_")]
-    recent_pot = df_pot_sorted.tail(100)
+    recent_pot = select_recent_iterations(df_pot_sorted)
     alloc_suffixes = [c.split('_')[-1] for c in alloc_cols]
     opt_suffixes = [c.split('_')[-1] for c in opt_cols]
     avg_alloc = {

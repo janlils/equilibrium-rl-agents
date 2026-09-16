@@ -104,8 +104,8 @@ python export_runs_excel.py --runs-file results/runs.txt --out results/summary.x
   - `efficient_pct`, `adjustment_pct` — share of efficient iterations and share spent adapting (based on potential ratio > 0.99 and a 5-step window).
   - `mean_efficiency`, `min_efficiency`, `max_efficiency`, `std_efficiency`, `mean_variance_efficiency`.
   - `mean_stability` — fraction of farmers who kept the same market between iterations.
-  - `avg_profit` — mean profit over the last 100 iterations.
-  - `recent_allocation_gap` — sum of absolute differences between actual and optimal allocations (last 100 iterations).
+  - `avg_profit` — mean profit over the last 100 iterations of every episode.
+  - `recent_allocation_gap` — sum of absolute differences between actual and optimal allocations over the last 100 iterations of every episode.
   - `eq_start_iteration` — average iteration (across episodes) when equilibrium (5 consecutive efficient iterations) was first reached.
   - `avg_alloc_mX`, `avg_opt_alloc_mX` — average vs. optimal allocation per market in the last 100 iterations, written side-by-side.
 
